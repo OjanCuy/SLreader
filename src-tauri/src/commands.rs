@@ -7,7 +7,7 @@ use std::sync::{Mutex, MutexGuard};
 use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::decisions::{self, Decision, ExclusionReason, Screening};
+use crate::decisions::{self, Decision, ExclusionReason, Screening, Summary};
 use crate::extraction::Extraction;
 use crate::highlights::{self, ExtractionTag, Highlight, HighlightCategory, HighlightEdit, NewHighlight};
 use crate::libraries::{self, LibraryError, LibrarySummary};
@@ -381,6 +381,14 @@ pub fn set_assessment_note(
     let current = lock(&current.0);
     let conn = libraries::library_for_writing(&current, session)?;
     decisions::set_assessment_note(conn, &paper_id, &note)
+}
+
+/// The counts for the summary bar (FR-04.5).
+#[tauri::command(async)]
+pub fn get_summary(current: State<'_, CurrentLibrary>, session: u64) -> Result<Summary, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_reading(&current, session)?;
+    decisions::summary(conn)
 }
 
 /// The library's exclusion reasons, in their order (FR-08.1).

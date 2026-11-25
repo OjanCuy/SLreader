@@ -307,6 +307,22 @@ export function listExclusionReasons(session: number): Promise<ExclusionReason[]
   return invoke("list_exclusion_reasons", { session });
 }
 
+export interface Summary {
+  papers: number;
+  include: number;
+  exclude: number;
+  undecided: number;
+  /** Excluded papers without a reason (FR-04.2). */
+  noReason: number;
+  /** Every reason of the library, in its order; counts only excluded papers (FR-04.3). */
+  reasons: (ExclusionReason & { count: number })[];
+}
+
+/** The counts of the open library for the summary bar (FR-04.5). */
+export function getSummary(session: number): Promise<Summary> {
+  return invoke("get_summary", { session });
+}
+
 /** Shows the system file picker for one PDF. Null when the user cancels. */
 export function pickPdf(): Promise<string | null> {
   return invoke("pick_pdf");

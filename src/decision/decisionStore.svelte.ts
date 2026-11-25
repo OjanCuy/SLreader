@@ -28,7 +28,8 @@ interface Unsaved {
 
 export type DecisionStore = ReturnType<typeof createDecisionStore>;
 
-export function createDecisionStore() {
+/** `onsaved` runs after a decision or reason was saved: the counts have changed. */
+export function createDecisionStore({ onsaved }: { onsaved?: () => void } = {}) {
   let paperId = $state<string | null>(null);
   let status = $state<"loading" | "ready" | "error">("loading");
   let screening = $state.raw<Screening | null>(null);
@@ -129,10 +130,12 @@ export function createDecisionStore() {
       if (decision !== undefined) {
         await setDecision(entry.session, id, decision);
         if (changes.decision === decision) delete changes.decision;
+        onsaved?.();
       }
       if (exclusionReasonId !== undefined) {
         await setExclusionReason(entry.session, id, exclusionReasonId);
         if (changes.exclusionReasonId === exclusionReasonId) delete changes.exclusionReasonId;
+        onsaved?.();
       }
       if (assessmentNote !== undefined) {
         await setAssessmentNote(entry.session, id, assessmentNote);

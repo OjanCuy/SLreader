@@ -56,6 +56,57 @@ pub struct ExclusionReason {
     pub label: String,
 }
 
+/// How many excluded papers have one reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReasonCount {
+    pub id: String,
+    pub code: String,
+    pub label: String,
+    pub count: u32,
+}
+
+/// The counts of the open library for the summary bar (FR-04.5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Summary {
+    pub papers: u32,
+    pub include: u32,
+    pub exclude: u32,
+    pub undecided: u32,
+    /// Excluded papers without a reason (FR-04.2).
+    pub no_reason: u32,
+    /// Every reason of the library, in its order, also with a count of 0.
+    pub reasons: Vec<ReasonCount>,
+}
+
+/// Counts the papers by decision and by exclusion reason. A reason counts only for
+/// papers that are excluded now (FR-04.3). Only reads.
+pub fn summary(conn: &Connection) -> Result<Summary, LibraryError> {
+    // One transaction, so all numbers describe the same moment.
+    let tx = conn.unchecked_transaction()?;
+    let (papers, include, exclude, undecided, no_reason) = tx.query_row(
+        "SELECT count(*),
+                count(*) FILTER (WHERE decision = 'include'),
+                count(*) FILTER (WHERE decision = 'exclude'),
+                count(*) FILTER (WHERE decision = 'undecided'),
+                count(*) FILTER (WHERE decision = 'exclude' AND exclusion_reason_id IS NULL)
+         FROM paper",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+    )?;
+    let reasons = tx
+        .prepare(
+            "SELECT r.id, r.code, r.label, count(p.id)
+             FROM exclusion_reason AS r
+             LEFT JOIN paper AS p ON p.exclusion_reason_id = r.id AND p.decision = 'exclude'
+             GROUP BY r.id
+             ORDER BY r.sort_order, r.rowid",
+        )?
+        .query_map([], |r| Ok(ReasonCount { id: r.get(0)?, code: r.get(1)?, label: r.get(2)?, count: r.get(3)? }))?
+        .collect::<Result<_, _>>()?;
+    Ok(Summary { papers, include, exclude, undecided, no_reason, reasons })
+}
+
 fn unknown(detail: String) -> LibraryError {
     LibraryError::new(ErrorCode::Other, detail)
 }
@@ -215,6 +266,61 @@ mod tests {
         assert!(serde_json::from_str::<Decision>(r#""maybe""#).is_err());
         assert_eq!(serde_json::to_value(Decision::Exclude).unwrap(), "exclude");
         assert_eq!(screening(&conn, &paper).unwrap().decision, Decision::Undecided);
+    }
+
+    fn counts(conn: &Connection) -> ([u32; 5], Vec<(String, u32)>) {
+        let s = summary(conn).unwrap();
+        (
+            [s.papers, s.include, s.exclude, s.undecided, s.no_reason],
+            s.reasons.into_iter().map(|r| (r.code, r.count)).collect(),
+        )
+    }
+
+    #[test]
+    fn an_empty_library_counts_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = create_library(dir.path(), "R").unwrap();
+        assert_eq!(counts(&conn), ([0, 0, 0, 0, 0], vec![]));
+    }
+
+    #[test]
+    fn follows_every_change_of_decision_and_reason() {
+        // PRD F-04 acceptance criteria.
+        let (_dir, conn, paper) = library_with_paper();
+        let e3 = add_reason(&conn, "E3", 1);
+        add_reason(&conn, "E1", 0);
+        let codes = |e3: u32| vec![("E1".to_string(), 0), ("E3".to_string(), e3)];
+        assert_eq!(counts(&conn), ([1, 0, 0, 1, 0], codes(0)));
+
+        set_decision(&conn, &paper, Decision::Exclude).unwrap();
+        assert_eq!(counts(&conn), ([1, 0, 1, 0, 1], codes(0)));
+        set_exclusion_reason(&conn, &paper, Some(&e3)).unwrap();
+        assert_eq!(counts(&conn), ([1, 0, 1, 0, 0], codes(1)));
+
+        // Back to Include: the stored reason no longer counts (FR-04.3).
+        set_decision(&conn, &paper, Decision::Include).unwrap();
+        assert_eq!(counts(&conn), ([1, 1, 0, 0, 0], codes(0)));
+        set_decision(&conn, &paper, Decision::Undecided).unwrap();
+        assert_eq!(counts(&conn), ([1, 0, 0, 1, 0], codes(0)));
+    }
+
+    #[test]
+    fn counts_all_papers_and_turns_a_deleted_reason_into_no_reason() {
+        let (_dir, conn, first) = library_with_paper();
+        let e3 = add_reason(&conn, "E3", 0);
+        let (second, third) = (add_paper(&conn), add_paper(&conn));
+        add_paper(&conn);
+        for paper in [&first, &second] {
+            set_decision(&conn, paper, Decision::Exclude).unwrap();
+            set_exclusion_reason(&conn, paper, Some(&e3)).unwrap();
+        }
+        set_decision(&conn, &third, Decision::Include).unwrap();
+        assert_eq!(counts(&conn), ([4, 1, 2, 1, 0], vec![("E3".to_string(), 2)]));
+
+        conn.execute("DELETE FROM exclusion_reason", []).unwrap();
+        assert_eq!(counts(&conn), ([4, 1, 2, 1, 2], vec![]));
+        conn.execute("DELETE FROM paper WHERE id = ?1", [&first]).unwrap();
+        assert_eq!(counts(&conn), ([3, 1, 1, 1, 1], vec![]));
     }
 
     #[test]

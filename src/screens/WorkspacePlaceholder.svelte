@@ -8,14 +8,17 @@
   import { onMount, untrack } from "svelte";
   import DecisionPanel from "../decision/DecisionPanel.svelte";
   import { createDecisionStore } from "../decision/decisionStore.svelte";
+  import SummaryBar from "../decision/SummaryBar.svelte";
   import {
     deletePaper,
+    getSummary,
     importPdfs,
     listPapers,
     onPaperTextChanged,
     pickPdfs,
     type LibrarySummary,
     type PaperListItem,
+    type Summary,
   } from "../lib/api";
   import Button from "../lib/components/Button.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
@@ -53,7 +56,10 @@
   const selectedPaper = $derived(papers?.find((paper) => paper.id === selected));
   /** Shared by the reader and the Highlights tab. */
   const highlights = createHighlightStore();
-  const decisions = createDecisionStore();
+  const decisions = createDecisionStore({ onsaved: () => refreshSummary() });
+  /** The counts in the top bar (FR-04.5). */
+  let summary = $state.raw<Summary | null>(null);
+  let summaryRequest = 0;
   /** The right panel's tab; it stays when another paper is opened. */
   let tab = $state<"decision" | "highlights">("decision");
   const TABS = [
@@ -87,7 +93,22 @@
     };
   });
 
+  /** Only the answer to the latest request counts, so an older one cannot win. */
+  async function refreshSummary() {
+    const request = ++summaryRequest;
+    try {
+      const counts = await getSummary(session);
+      if (request === summaryRequest) summary = counts ?? null;
+    } catch (failure) {
+      if (request !== summaryRequest) return;
+      // Old numbers would be wrong, so none are shown.
+      summary = null;
+      console.error("The summary could not be read", failure);
+    }
+  }
+
   async function refresh() {
+    refreshSummary();
     try {
       papers = await listPapers(session);
     } catch (failure) {
@@ -175,6 +196,7 @@
 <div class="workspace">
   <header>
     <LibrarySwitcher current={library} {onswitch} {onshowall} />
+    {#if summary}<SummaryBar {summary} />{/if}
     <div class="actions">{@render uploadButton()}</div>
   </header>
 

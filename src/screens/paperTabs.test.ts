@@ -79,6 +79,57 @@ describe("the paper's tabs (Brief Section 6, S-02)", () => {
     expect(screen.getByRole("tabpanel", { name: "Decision" })).toBeTruthy();
   });
 
+  it("updates the summary bar when a decision is saved (FR-04.5)", async () => {
+    const counts = (exclude: number, e3: number): api.Summary => ({
+      papers: 2,
+      include: 1,
+      exclude,
+      undecided: 1 - exclude,
+      noReason: exclude - e3,
+      reasons: [{ id: "r3", code: "E3", label: "Wrong population", count: e3 }],
+    });
+    mocked.listExclusionReasons.mockResolvedValue([{ id: "r3", code: "E3", label: "Wrong population" }]);
+    mocked.getSummary.mockResolvedValue(counts(0, 0));
+    mocked.setExclusionReason.mockResolvedValue();
+    show();
+    const chips = () =>
+      Array.from(document.querySelectorAll(".summary li"), (chip) =>
+        chip.textContent?.replace(/\s+/g, " ").trim(),
+      );
+    await vi.waitFor(() =>
+      expect(chips()).toEqual([
+        "Papers 2",
+        "Include 1",
+        "Exclude 0",
+        "Undecided 1",
+        "E3, Wrong population 0",
+        "No reason 0",
+      ]),
+    );
+    expect(document.querySelector(".summary li[title='Wrong population']")).toBeTruthy();
+
+    await open("a.pdf");
+    await vi.waitFor(() => expect(radio("Undecided").checked).toBe(true));
+    mocked.getSummary.mockResolvedValue(counts(1, 0));
+    await fireEvent.click(radio("Exclude"));
+    await vi.waitFor(() => expect(chips()).toContain("No reason 1"));
+
+    mocked.getSummary.mockResolvedValue(counts(1, 1));
+    await fireEvent.change(screen.getByLabelText("Exclusion reason"), { target: { value: "r3" } });
+    await vi.waitFor(() => expect(chips()).toContain("E3, Wrong population 1"));
+    expect(chips()).toContain("No reason 0");
+    expect(mocked.getSummary).toHaveBeenLastCalledWith(7);
+  });
+
+  it("shows no numbers rather than wrong ones when they cannot be read", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mocked.getSummary.mockRejectedValue(new Error("busy"));
+    show();
+    await screen.findByRole("button", { name: "a.pdf" });
+    await vi.waitFor(() => expect(mocked.getSummary).toHaveBeenCalled());
+    expect(document.querySelector(".summary")).toBeNull();
+  });
+
   it("shows each paper's own decision and saves a change to the open paper only", async () => {
     show();
     await open("a.pdf");

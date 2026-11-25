@@ -93,6 +93,7 @@ pub fn run() {
             commands::set_exclusion_reason,
             commands::set_assessment_note,
             commands::list_exclusion_reasons,
+            commands::get_summary,
             commands::delete_paper,
             commands::get_last_page,
             commands::save_last_page,
