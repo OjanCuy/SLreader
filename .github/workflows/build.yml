@@ -1,0 +1,65 @@
+# Tests the app and builds the Windows installer on every push and pull request.
+name: Build Windows installer
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# The workflow only needs to read the code.
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out the code
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Set up Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+
+      - name: Cache Rust builds
+        # Third-party action, pinned to an exact commit (v2.9.3).
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: src-tauri
+
+      - name: Install UI dependencies
+        run: npm ci
+
+      - name: Type check the UI
+        run: npm run check
+
+      - name: UI tests
+        run: npm run test
+
+      # Tauri embeds the built UI at compile time, so build it before the Rust tests.
+      - name: Build the UI
+        run: npm run build
+
+      - name: Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Build the installer
+        run: npm run tauri build
+
+      - name: Upload the installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: SLReader-windows-installer
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

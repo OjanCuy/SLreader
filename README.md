@@ -53,6 +53,10 @@ npm run check          # type check the UI
 
 The first Rust build takes several minutes. The installer is written to `src-tauri/target/release/bundle/nsis/`.
 
+### Continuous integration
+
+Every push and pull request runs the checks and builds the Windows installer on [GitHub Actions](https://github.com/OjanCuy/SLreader/actions). To get the installer of a run, open the run and download `SLReader-windows-installer` under "Artifacts" (GitHub sign-in required). These are unsigned development builds, not releases.
+
 ### Project layout
 
 - `src/`: Svelte UI. `src/lib/api.ts` is the only file that calls the Rust core.
