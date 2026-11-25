@@ -16,7 +16,10 @@ pub const MAX_PAPERS: i64 = 250;
 pub const LIBRARY_SCHEMA: Schema = Schema {
     // "SLRL" in ASCII.
     application_id: 0x534C_524C,
-    migrations: &[include_str!("migrations/library/001_initial.sql")],
+    migrations: &[
+        include_str!("migrations/library/001_initial.sql"),
+        include_str!("migrations/library/002_highlight_categories.sql"),
+    ],
 };
 
 /// Creates `library.sqlite` in an existing folder. Fails if the folder already has one.
@@ -211,11 +214,9 @@ mod tests {
         let id = add_paper(&conn);
         assert!(conn.execute("UPDATE paper SET decision = 'maybe' WHERE id = ?1", [&id]).is_err());
         assert!(conn.execute("UPDATE paper SET text_status = 'done' WHERE id = ?1", [&id]).is_err());
+        // Highlight colors come from the palette of 8 (FR-08.6).
         assert!(conn
-            .execute(
-                "INSERT INTO highlight (paper_id, page, color, text, rects) VALUES (?1, 1, 'purple', 't', '[]')",
-                [&id],
-            )
+            .execute("INSERT INTO highlight_category (label, color, sort_order) VALUES ('Other', 'teal', 9)", [])
             .is_err());
     }
 
@@ -302,8 +303,8 @@ mod tests {
             })
             .unwrap();
         conn.execute(
-            "INSERT INTO highlight (paper_id, extraction_tag_id, page, color, text, rects)
-             VALUES (?1, ?2, 3, 'blue', 'FCR 1.2', '[{\"x\":0.1,\"y\":0.2,\"w\":0.3,\"h\":0.02}]')",
+            "INSERT INTO highlight (paper_id, extraction_tag_id, page, highlight_category_id, text, rects)
+             VALUES (?1, ?2, 3, (SELECT id FROM highlight_category WHERE color = 'blue'), 'FCR 1.2', '[{\"x\":0.1,\"y\":0.2,\"w\":0.3,\"h\":0.02}]')",
             [&paper, &tag],
         )
         .unwrap();
@@ -321,7 +322,8 @@ mod tests {
         let paper = add_paper(&conn);
         assert!(conn
             .execute(
-                "INSERT INTO highlight (paper_id, page, color, text, rects) VALUES (?1, 1, 'red', 't', 'not json')",
+                "INSERT INTO highlight (paper_id, page, highlight_category_id, text, rects)
+                 VALUES (?1, 1, (SELECT id FROM highlight_category WHERE color = 'red'), 't', 'not json')",
                 [&paper],
             )
             .is_err());
@@ -347,7 +349,8 @@ mod tests {
             conn.query_row(sql, rusqlite::params_from_iter(args), |r| r.get(0)).unwrap()
         };
         one(
-            "INSERT INTO highlight (paper_id, page, color, text, rects) VALUES (?1, 1, 'green', 't', '[]') RETURNING id",
+            "INSERT INTO highlight (paper_id, page, highlight_category_id, text, rects)
+             VALUES (?1, 1, (SELECT id FROM highlight_category WHERE color = 'green'), 't', '[]') RETURNING id",
             &[&paper],
         );
         let chunk = one(
@@ -476,6 +479,196 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(open_library(dir.path()), Err(DbError::NotSlreader)));
+    }
+
+    // ---- T-61: highlight categories (FR-03.1, FR-08.6) ----
+
+    /// The library schema as the first release left it: version 1, 4 fixed colors.
+    const V1_ONLY: super::super::Schema = super::super::Schema {
+        application_id: LIBRARY_SCHEMA.application_id,
+        migrations: &[include_str!("migrations/library/001_initial.sql")],
+    };
+
+    const OLD_COLORS: [&str; 5] = ["green", "red", "blue", "yellow", "green"];
+
+    /// Every column of every highlight except its color, oldest first.
+    fn highlight_rows(conn: &Connection) -> Vec<Vec<String>> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, paper_id, extraction_tag_id, page, text, rects, note, created_at
+                 FROM highlight ORDER BY created_at, rowid",
+            )
+            .unwrap();
+        stmt.query_map([], |r| {
+            (0..8)
+                .map(|i| r.get::<_, rusqlite::types::Value>(i).map(|value| format!("{value:?}")))
+                .collect::<rusqlite::Result<Vec<String>>>()
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+    }
+
+    /// A version 1 library with one highlight per entry of `OLD_COLORS`.
+    fn v1_library() -> (tempfile::TempDir, Vec<(String, &'static str)>, Vec<Vec<String>>) {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = super::super::open(&dir.path().join(LIBRARY_DB_FILE), &V1_ONLY, true).unwrap();
+        conn.execute("INSERT INTO library (name) VALUES ('Old review')", []).unwrap();
+        let paper = add_paper(&conn);
+        let tag: String = conn
+            .query_row("INSERT INTO extraction_tag (label, sort_order) VALUES ('FCR', 0) RETURNING id", [], |r| r.get(0))
+            .unwrap();
+        let highlights = OLD_COLORS
+            .iter()
+            .enumerate()
+            .map(|(i, color)| {
+                let id: String = conn
+                    .query_row(
+                        "INSERT INTO highlight (paper_id, extraction_tag_id, page, color, text, rects, note)
+                         VALUES (?1, ?2, ?3, ?4, ?5, '[{\"x\":0.1,\"y\":0.2,\"w\":0.3,\"h\":0.02}]', ?6) RETURNING id",
+                        params![
+                            paper,
+                            (i == 2).then_some(&tag),
+                            i as i64 + 1,
+                            color,
+                            format!("text {i}"),
+                            format!("note {i}")
+                        ],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                (id, *color)
+            })
+            .collect();
+        let rows = highlight_rows(&conn);
+        drop(conn);
+        (dir, highlights, rows)
+    }
+
+    fn categories(conn: &Connection) -> Vec<(String, String, i64)> {
+        conn.prepare("SELECT label, color, sort_order FROM highlight_category ORDER BY sort_order")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn defaults() -> Vec<(String, String, i64)> {
+        [("Inclusion", "green"), ("Exclusion", "red"), ("Method", "blue"), ("Result", "yellow")]
+            .iter()
+            .enumerate()
+            .map(|(i, (label, color))| (label.to_string(), color.to_string(), i as i64))
+            .collect()
+    }
+
+    fn category_id(conn: &Connection, color: &str) -> String {
+        conn.query_row("SELECT id FROM highlight_category WHERE color = ?1", [color], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_new_library_starts_with_the_four_default_categories() {
+        let (_dir, conn) = new_library();
+        assert_eq!(categories(&conn), defaults());
+    }
+
+    #[test]
+    fn migrating_moves_every_old_highlight_to_the_category_of_its_color() {
+        let (dir, highlights, before) = v1_library();
+
+        let conn = open_library(dir.path()).unwrap().conn;
+        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(version, 2);
+        assert_eq!(categories(&conn), defaults());
+        // Nothing is lost or changed: same rows, same text, notes, tags, pages, times.
+        assert_eq!(highlight_rows(&conn), before);
+        for (id, old_color) in &highlights {
+            let color: String = conn
+                .query_row(
+                    "SELECT c.color FROM highlight h JOIN highlight_category c ON c.id = h.highlight_category_id
+                     WHERE h.id = ?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(&color, old_color);
+        }
+        // The old column is gone; the copy saved before migrating still has it.
+        assert!(conn.prepare("SELECT color FROM highlight").is_err());
+        let backup = Connection::open(dir.path().join("library-v1-backup.sqlite")).unwrap();
+        let old: Vec<String> = backup
+            .prepare("SELECT color FROM highlight ORDER BY rowid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(old, OLD_COLORS);
+    }
+
+    #[test]
+    fn migrating_keeps_deleting_a_paper_deleting_its_highlights() {
+        let (dir, _, _) = v1_library();
+        let conn = open_library(dir.path()).unwrap().conn;
+        conn.execute("DELETE FROM paper", []).unwrap();
+        assert_eq!(count(&conn, "highlight"), 0);
+        assert_eq!(count(&conn, "highlight_category"), 4);
+    }
+
+    #[test]
+    fn categories_have_unique_colors_and_names_from_the_palette() {
+        let (_dir, conn) = new_library();
+        let add = |label: &str, color: &str| {
+            conn.execute(
+                "INSERT INTO highlight_category (label, color, sort_order) VALUES (?1, ?2, 9)",
+                [label, color],
+            )
+        };
+        assert!(add("Second green", "green").is_err());
+        assert!(add("  method ", "purple").is_err());
+        assert!(add("   ", "purple").is_err());
+        for (label, color) in [("Sample", "purple"), ("Site", "orange"), ("Species", "pink"), ("Other", "gray")] {
+            add(label, color).unwrap();
+        }
+        // 8 is the most: the trigger says so before the color rule is checked.
+        let ninth = add("Ninth", "green").unwrap_err();
+        assert!(ninth.to_string().contains("at most 8"), "{ninth}");
+        assert_eq!(count(&conn, "highlight_category"), 8);
+    }
+
+    #[test]
+    fn a_category_in_use_and_the_last_category_cannot_be_deleted() {
+        let (_dir, conn) = new_library();
+        let paper = add_paper(&conn);
+        let red = category_id(&conn, "red");
+        conn.execute(
+            "INSERT INTO highlight (paper_id, page, highlight_category_id, text, rects) VALUES (?1, 1, ?2, 't', '[]')",
+            [&paper, &red],
+        )
+        .unwrap();
+
+        // In use: the highlight must be moved first (FR-08.6), so it is never lost.
+        assert!(conn.execute("DELETE FROM highlight_category WHERE id = ?1", [&red]).is_err());
+        assert_eq!(count(&conn, "highlight"), 1);
+        let green = category_id(&conn, "green");
+        conn.execute("UPDATE highlight SET highlight_category_id = ?1", [&green]).unwrap();
+        conn.execute("DELETE FROM highlight_category WHERE id = ?1", [&red]).unwrap();
+
+        conn.execute("DELETE FROM highlight_category WHERE color IN ('blue', 'yellow')", []).unwrap();
+        conn.execute("UPDATE highlight SET highlight_category_id = NULL", []).unwrap_err();
+        let last = conn.execute("DELETE FROM highlight_category", []).unwrap_err();
+        assert!(last.to_string().contains("at least 1") || last.to_string().contains("FOREIGN KEY"), "{last}");
+        assert_eq!(count(&conn, "highlight_category"), 1);
+        assert_eq!(count(&conn, "highlight"), 1);
+    }
+
+    #[test]
+    fn the_last_unused_category_cannot_be_deleted() {
+        let (_dir, conn) = new_library();
+        conn.execute("DELETE FROM highlight_category WHERE color <> 'yellow'", []).unwrap();
+        let last = conn.execute("DELETE FROM highlight_category", []).unwrap_err();
+        assert!(last.to_string().contains("at least 1"), "{last}");
+        assert_eq!(categories(&conn), [("Result".to_string(), "yellow".to_string(), 3)]);
     }
 
     // ---- T-07: newer versions and damaged databases (PRD Section 8) ----

@@ -8,7 +8,7 @@ use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::extraction::Extraction;
-use crate::highlights::{self, Highlight, NewHighlight};
+use crate::highlights::{self, Highlight, HighlightCategory, NewHighlight};
 use crate::libraries::{self, LibraryError, LibrarySummary};
 use crate::papers::{self, ImportOutcome, ImportReport, PaperListItem};
 use crate::settings::{self, PageMode};
@@ -258,6 +258,17 @@ pub fn save_last_page(
     let current = lock(&current.0);
     let (conn, _) = libraries::library_and_folder_for_writing(&current, session)?;
     papers::save_last_page(conn, &paper_id, page)
+}
+
+/// The library's highlight categories, in their order (FR-03.1, FR-08.6).
+#[tauri::command(async)]
+pub fn list_highlight_categories(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+) -> Result<Vec<HighlightCategory>, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_reading(&current, session)?;
+    highlights::list_categories(conn)
 }
 
 /// The highlights of a paper, by page (FR-03.2).

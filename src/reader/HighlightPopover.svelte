@@ -1,20 +1,22 @@
 <!--
-  O-03 Highlight popover (FR-03.1): 4 buttons, each a swatch and its label; keys 1–4
-  pick a color while it is open (PdfView handles the keys).
+  O-03 Highlight popover (FR-03.1): one button per highlight category of the library
+  (1 to 8), each a swatch and the category's name; keys 1–8 pick one while it is open
+  (PdfView handles the keys).
   Sits below the selection and flips above it when there is no room (Brief Section 9).
   It never takes focus or the mouse press, so the selection stays.
 -->
 <script lang="ts">
-  import type { HighlightColor } from "../lib/api";
-  import { HIGHLIGHT_KINDS } from "./highlights";
+  import type { HighlightCategory } from "../lib/api";
+  import { categoryKey } from "./highlights";
 
   interface Props {
+    categories: HighlightCategory[];
     /** The selection on screen, in CSS pixels from the window's top left. */
     bounds: { left: number; top: number; right: number; bottom: number };
-    onpick: (color: HighlightColor) => void;
+    onpick: (category: HighlightCategory) => void;
   }
 
-  let { bounds, onpick }: Props = $props();
+  let { categories, bounds, onpick }: Props = $props();
 
   const GAP = 8;
 
@@ -37,15 +39,16 @@
   bind:offsetWidth={width}
   bind:offsetHeight={height}
 >
-  {#each HIGHLIGHT_KINDS as kind (kind.color)}
+  {#each categories as category, index (category.id)}
     <button
       type="button"
-      aria-keyshortcuts={kind.key}
+      aria-keyshortcuts={categoryKey(index)}
+      title={category.label}
       onmousedown={(event) => event.preventDefault()}
-      onclick={() => onpick(kind.color)}
+      onclick={() => onpick(category)}
     >
-      <span class="swatch" style:background="var(--hl-{kind.token}-swatch)"></span>
-      {kind.label}
+      <span class="swatch" style:background="var(--hl-{category.color}-swatch)"></span>
+      <span class="label">{category.label}</span>
     </button>
   {/each}
 </div>
@@ -55,6 +58,8 @@
     position: fixed;
     z-index: 10;
     display: flex;
+    flex-wrap: wrap;
+    max-width: min(560px, calc(100vw - 16px));
     gap: var(--space-1);
     padding: var(--space-1);
     border: var(--border-float);
@@ -87,8 +92,17 @@
   }
 
   .swatch {
+    flex: none;
     width: 12px;
     height: 12px;
     border-radius: var(--radius-full);
+  }
+
+  /* A long category name does not make the popover huge. */
+  .label {
+    max-width: 16ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

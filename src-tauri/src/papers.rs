@@ -980,7 +980,11 @@ mod tests {
     /// that quotes it.
     fn add_everything(conn: &Connection, paper: &str) {
         let insert = |sql: &str, id: &str| -> String { conn.query_row(sql, [id], |r| r.get(0)).unwrap() };
-        insert("INSERT INTO highlight (paper_id, page, color, text, rects) VALUES (?1, 1, 'green', 't', '[]') RETURNING id", paper);
+        insert(
+            "INSERT INTO highlight (paper_id, page, highlight_category_id, text, rects)
+             VALUES (?1, 1, (SELECT id FROM highlight_category WHERE color = 'green'), 't', '[]') RETURNING id",
+            paper,
+        );
         let chunk = insert("INSERT INTO text_chunk (paper_id, page_start, page_end, text) VALUES (?1, 1, 1, 't') RETURNING id", paper);
         let suggestion = insert(
             "INSERT INTO suggestion (paper_id, proposed_decision, rationale, model_label) VALUES (?1, 'include', 'r', 'm') RETURNING id",

@@ -15,12 +15,14 @@
     extractLockedPaperText,
     getLastPage,
     getPageMode,
+    listHighlightCategories,
     listHighlights,
     pickPdf,
     readPaperPdf,
     saveLastPage,
     setPageMode,
     type Highlight,
+    type HighlightCategory,
     type LibraryError,
     type NewHighlight,
     type PageMode,
@@ -94,14 +96,19 @@
 
   /** The highlights of the open paper (FR-03.2). */
   let highlights = $state.raw<Highlight[]>([]);
+  /** The library's highlight categories (FR-03.1), read again for each paper. */
+  let categories = $state.raw<HighlightCategory[]>([]);
 
-  /** The PDF still opens when its highlights cannot be read. */
-  async function storedHighlights(id: string): Promise<Highlight[]> {
+  /**
+   * The PDF still opens when its highlights or the categories cannot be read; without
+   * categories no highlight is drawn or made.
+   */
+  async function storedHighlights(id: string): Promise<[Highlight[], HighlightCategory[]]> {
     try {
-      return await listHighlights(session, id);
+      return await Promise.all([listHighlights(session, id), listHighlightCategories(session)]);
     } catch (failure) {
       console.error("The highlights could not be read", failure);
-      return [];
+      return [[], []];
     }
   }
 
@@ -164,7 +171,7 @@
         if (stopped) return;
         opened = await openPdf(bytes, tried);
         if (stopped) return opened.close();
-        highlights = stored;
+        [highlights, categories] = stored;
         view = { kind: "ready", pdf: opened, startPage, saver };
         askingPassword = false;
         wrongPassword = false;
@@ -237,6 +244,7 @@
         {mode}
         onmode={chooseMode}
         {highlights}
+        {categories}
         onhighlight={readOnly
           ? undefined
           : (highlight, crossed) => paperId && saveHighlight(paperId, highlight, crossed)}

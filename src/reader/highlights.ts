@@ -1,36 +1,58 @@
-// Highlights (FR-03.1, FR-03.2): the 4 fixed colors, their texts, and how a text
+// Highlights (FR-03.1, FR-03.2): the library's categories, their texts, and how a text
 // selection becomes rectangles in shares (0 to 1) of the page.
 // Pure functions without the DOM or PDF.js, so they can be tested on their own.
 
-import type { Highlight, HighlightColor, HighlightRect } from "../lib/api";
+import type { Highlight, HighlightCategory, HighlightRect, PaletteColor } from "../lib/api";
 
-export interface HighlightKind {
-  color: HighlightColor;
-  /** The button label in the popover (O-03). */
-  label: string;
-  /** What the color means, for the mark's accessible name. */
-  meaning: string;
-  /** The design token family: --hl-<token>-fill and --hl-<token>-swatch. */
-  token: "include" | "exclude" | "method" | "result";
-  /** The key that picks it while the popover is open. */
-  key: "1" | "2" | "3" | "4";
+/** A library has 1 to 8 highlight categories (FR-08.6); keys 1–8 pick them. */
+export const MAX_CATEGORIES = 8;
+
+/** The key that picks the category at this place in the popover, "1" to "8". */
+export function categoryKey(index: number): string | null {
+  return index >= 0 && index < MAX_CATEGORIES ? String(index + 1) : null;
 }
 
-/** In popover order (Brief O-03). The meanings are fixed (FR-03.1). */
-export const HIGHLIGHT_KINDS: readonly HighlightKind[] = [
-  { color: "green", label: "Inclusion", meaning: "supports inclusion", token: "include", key: "1" },
-  { color: "red", label: "Exclusion", meaning: "supports exclusion", token: "exclude", key: "2" },
-  { color: "blue", label: "Method", meaning: "method", token: "method", key: "3" },
-  { color: "yellow", label: "Result", meaning: "quantitative result", token: "result", key: "4" },
-];
-
-export function kindOf(color: HighlightColor): HighlightKind {
-  return HIGHLIGHT_KINDS.find((kind) => kind.color === color) ?? HIGHLIGHT_KINDS[0];
+/** The category a key picks, if any. */
+export function categoryForKey(categories: HighlightCategory[], key: string): HighlightCategory | null {
+  const index = categories.findIndex((_, place) => categoryKey(place) === key);
+  return index === -1 ? null : categories[index];
 }
 
-/** "Highlight, supports exclusion, page 4" (Brief Section 10). */
-export function highlightName(color: HighlightColor, page: number): string {
-  return `Highlight, ${kindOf(color).meaning}, page ${page}`;
+/** "Highlight, Exclusion, page 4": the category's own name (Brief Section 10). */
+export function highlightName(label: string, page: number): string {
+  return `Highlight, ${label}, page ${page}`;
+}
+
+/** A highlight as a page draws it. */
+export interface PageMark {
+  id: string;
+  color: PaletteColor;
+  /** Accessible name. */
+  name: string;
+  rects: HighlightRect[];
+}
+
+/**
+ * The marks of each page, by page number (1-based). A highlight whose category is
+ * not in the list is left out (the categories could not be read).
+ */
+export function pageMarks(highlights: Highlight[], categories: HighlightCategory[]): Map<number, PageMark[]> {
+  const byId = new Map(categories.map((category) => [category.id, category]));
+  const pages = new Map<number, PageMark[]>();
+  for (const highlight of highlights) {
+    const category = byId.get(highlight.categoryId);
+    if (!category) continue;
+    const mark: PageMark = {
+      id: highlight.id,
+      color: category.color,
+      name: highlightName(category.label, highlight.page),
+      rects: highlight.rects,
+    };
+    const list = pages.get(highlight.page);
+    if (list) list.push(mark);
+    else pages.set(highlight.page, [mark]);
+  }
+  return pages;
 }
 
 /** FR-03.5, PRD Section 8. */
@@ -104,15 +126,4 @@ export function toShares(rect: ScreenRect, page: ScreenRect): HighlightRect | nu
 /** The selected text as saved: one space between words, also across line ends. */
 export function cleanText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
-}
-
-/** The highlights of each page, by page number (1-based). */
-export function groupHighlights(highlights: Highlight[]): Map<number, Highlight[]> {
-  const pages = new Map<number, Highlight[]>();
-  for (const highlight of highlights) {
-    const list = pages.get(highlight.page);
-    if (list) list.push(highlight);
-    else pages.set(highlight.page, [highlight]);
-  }
-  return pages;
 }

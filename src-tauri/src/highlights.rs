@@ -1,9 +1,13 @@
-//! Highlights on a paper's pages (FR-03.1, FR-03.2).
+//! Highlights on a paper's pages (FR-03.1, FR-03.2) and the library's highlight
+//! categories (FR-08.6).
 //!
-//! A highlight keeps its page, its color, the selected text, and where it is on the
+//! A highlight keeps its page, its category, the selected text, and where it is on the
 //! page as rectangles in shares (0 to 1) of the page's width and height, as the page
 //! is shown (its own rotation applied). Shares do not depend on the zoom, so a
 //! highlight sits on the same words at every zoom level.
+//!
+//! Each library has 1 to 8 categories, each with a name and a color of a fixed palette
+//! of 8 (T-61). Managing them is T-62; the schema enforces the rules (migration 002).
 //!
 //! Every function receives the connection of the open library from
 //! `libraries::library_for_*` (FR-14.4). Nothing here touches `paper.decision`.
@@ -13,39 +17,58 @@ use serde::{Deserialize, Serialize};
 
 use crate::libraries::{ErrorCode, LibraryError};
 
-/// The 4 fixed colors and what they mean (FR-03.1, PRD 7a).
+/// The palette (PRD 7a). Each color is used by one category of a library at most.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum HighlightColor {
-    /// Supports inclusion.
+pub enum PaletteColor {
     Green,
-    /// Supports exclusion.
     Red,
-    /// Method.
     Blue,
-    /// Quantitative result.
     Yellow,
+    Purple,
+    Orange,
+    Pink,
+    Gray,
 }
 
-impl HighlightColor {
-    fn as_str(self) -> &'static str {
+impl PaletteColor {
+    pub const ALL: [PaletteColor; 8] = [
+        PaletteColor::Green,
+        PaletteColor::Red,
+        PaletteColor::Blue,
+        PaletteColor::Yellow,
+        PaletteColor::Purple,
+        PaletteColor::Orange,
+        PaletteColor::Pink,
+        PaletteColor::Gray,
+    ];
+
+    pub fn as_str(self) -> &'static str {
         match self {
-            HighlightColor::Green => "green",
-            HighlightColor::Red => "red",
-            HighlightColor::Blue => "blue",
-            HighlightColor::Yellow => "yellow",
+            PaletteColor::Green => "green",
+            PaletteColor::Red => "red",
+            PaletteColor::Blue => "blue",
+            PaletteColor::Yellow => "yellow",
+            PaletteColor::Purple => "purple",
+            PaletteColor::Orange => "orange",
+            PaletteColor::Pink => "pink",
+            PaletteColor::Gray => "gray",
         }
     }
 
     fn parse(text: &str) -> Option<Self> {
-        Some(match text {
-            "green" => HighlightColor::Green,
-            "red" => HighlightColor::Red,
-            "blue" => HighlightColor::Blue,
-            "yellow" => HighlightColor::Yellow,
-            _ => return None,
-        })
+        Self::ALL.into_iter().find(|color| color.as_str() == text)
     }
+}
+
+/// A highlight category of the library, as the UI gets it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HighlightCategory {
+    pub id: String,
+    pub label: String,
+    pub color: PaletteColor,
+    pub sort_order: i64,
 }
 
 /// An area of the page: left edge, top edge, width, and height, as shares of the page.
@@ -64,7 +87,7 @@ pub struct Highlight {
     pub id: String,
     /// 1-based.
     pub page: u32,
-    pub color: HighlightColor,
+    pub category_id: String,
     pub text: String,
     pub rects: Vec<Rect>,
     pub note: String,
@@ -72,12 +95,12 @@ pub struct Highlight {
     pub created_at: String,
 }
 
-/// What the reader sends when the user picks a color for a selection.
+/// What the reader sends when the user picks a category for a selection.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewHighlight {
     pub page: u32,
-    pub color: HighlightColor,
+    pub category_id: String,
     pub text: String,
     pub rects: Vec<Rect>,
 }
@@ -117,18 +140,41 @@ fn check(new: &NewHighlight) -> Result<(), LibraryError> {
     Ok(())
 }
 
+/// The library's highlight categories, in their order (FR-03.1).
+/// A row with a color this version does not know is left out.
+pub fn list_categories(conn: &Connection) -> Result<Vec<HighlightCategory>, LibraryError> {
+    let mut stmt = conn.prepare("SELECT id, label, color, sort_order FROM highlight_category ORDER BY sort_order, rowid")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?))
+    })?;
+    let mut categories = Vec::new();
+    for row in rows {
+        let (id, label, color, sort_order) = row?;
+        match PaletteColor::parse(&color) {
+            Some(color) => categories.push(HighlightCategory { id, label, color, sort_order }),
+            None => eprintln!("highlight category {id} has an unknown color and is not shown"),
+        }
+    }
+    Ok(categories)
+}
+
 /// Saves a new highlight on a paper and returns it.
 pub fn add_highlight(conn: &Connection, paper_id: &str, new: &NewHighlight) -> Result<Highlight, LibraryError> {
     check(new)?;
-    let exists: Option<i64> =
-        conn.query_row("SELECT 1 FROM paper WHERE id = ?1", [paper_id], |r| r.get(0)).optional()?;
-    if exists.is_none() {
+    let exists = |sql: &str, id: &str| -> Result<bool, LibraryError> {
+        Ok(conn.query_row(sql, [id], |r| r.get::<_, i64>(0)).optional()?.is_some())
+    };
+    if !exists("SELECT 1 FROM paper WHERE id = ?1", paper_id)? {
         return Err(LibraryError::new(ErrorCode::Other, format!("no paper with id {paper_id}")));
+    }
+    if !exists("SELECT 1 FROM highlight_category WHERE id = ?1", &new.category_id)? {
+        return Err(invalid("no such category"));
     }
     let rects = serde_json::to_string(&new.rects).map_err(|e| invalid(&e.to_string()))?;
     let id: String = conn.query_row(
-        "INSERT INTO highlight (paper_id, page, color, text, rects) VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
-        params![paper_id, new.page, new.color.as_str(), new.text.trim(), rects],
+        "INSERT INTO highlight (paper_id, page, highlight_category_id, text, rects)
+         VALUES (?1, ?2, ?3, ?4, ?5) RETURNING id",
+        params![paper_id, new.page, new.category_id, new.text.trim(), rects],
         |r| r.get(0),
     )?;
     list_highlights(conn, paper_id)?
@@ -141,7 +187,7 @@ pub fn add_highlight(conn: &Connection, paper_id: &str, new: &NewHighlight) -> R
 /// A row whose rectangles cannot be read is left out instead of failing the whole list.
 pub fn list_highlights(conn: &Connection, paper_id: &str) -> Result<Vec<Highlight>, LibraryError> {
     let mut stmt = conn.prepare(
-        "SELECT id, page, color, text, rects, note, extraction_tag_id, created_at
+        "SELECT id, page, highlight_category_id, text, rects, note, extraction_tag_id, created_at
          FROM highlight WHERE paper_id = ?1 ORDER BY page, created_at, rowid",
     )?;
     let rows = stmt.query_map([paper_id], |r| {
@@ -158,13 +204,12 @@ pub fn list_highlights(conn: &Connection, paper_id: &str) -> Result<Vec<Highligh
     })?;
     let mut highlights = Vec::new();
     for row in rows {
-        let (id, page, color, text, rects, note, extraction_tag_id, created_at) = row?;
-        let (Some(color), Ok(rects)) = (HighlightColor::parse(&color), serde_json::from_str::<Vec<Rect>>(&rects))
-        else {
+        let (id, page, category_id, text, rects, note, extraction_tag_id, created_at) = row?;
+        let Ok(rects) = serde_json::from_str::<Vec<Rect>>(&rects) else {
             eprintln!("highlight {id} could not be read and is not shown");
             continue;
         };
-        highlights.push(Highlight { id, page, color, text, rects, note, extraction_tag_id, created_at });
+        highlights.push(Highlight { id, page, category_id, text, rects, note, extraction_tag_id, created_at });
     }
     Ok(highlights)
 }
@@ -181,18 +226,56 @@ mod tests {
         (dir, conn, id)
     }
 
-    fn new(page: u32, color: HighlightColor, rects: Vec<Rect>) -> NewHighlight {
-        NewHighlight { page, color, text: "  Feed conversion ratio was 1.4  ".into(), rects }
+    /// The id of the library's category with this color.
+    fn category(conn: &Connection, color: PaletteColor) -> String {
+        list_categories(conn).unwrap().into_iter().find(|c| c.color == color).unwrap().id
+    }
+
+    fn new(conn: &Connection, page: u32, color: PaletteColor, rects: Vec<Rect>) -> NewHighlight {
+        NewHighlight { page, category_id: category(conn, color), text: "  Feed conversion ratio was 1.4  ".into(), rects }
     }
 
     const LINE: Rect = Rect { x: 0.12, y: 0.31, w: 0.5, h: 0.018 };
 
     #[test]
-    fn saves_and_lists_a_highlight_with_its_page_position_and_text() {
+    fn lists_the_default_categories_in_order() {
+        let (_dir, conn, _) = library_with_paper();
+        let listed: Vec<(String, PaletteColor)> =
+            list_categories(&conn).unwrap().into_iter().map(|c| (c.label, c.color)).collect();
+        assert_eq!(
+            listed,
+            [
+                ("Inclusion".to_string(), PaletteColor::Green),
+                ("Exclusion".to_string(), PaletteColor::Red),
+                ("Method".to_string(), PaletteColor::Blue),
+                ("Result".to_string(), PaletteColor::Yellow),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_palette_matches_the_schema() {
+        // Every palette color can be stored, and the names sent to the UI are the stored ones.
+        let (_dir, conn, _) = library_with_paper();
+        conn.execute("DELETE FROM highlight_category WHERE color <> 'green'", []).unwrap();
+        for (index, color) in PaletteColor::ALL.iter().enumerate().skip(1) {
+            conn.execute(
+                "INSERT INTO highlight_category (label, color, sort_order) VALUES (?1, ?2, ?3)",
+                params![format!("C{index}"), color.as_str(), index as i64],
+            )
+            .unwrap();
+            assert_eq!(serde_json::to_value(color).unwrap(), color.as_str());
+        }
+        assert_eq!(list_categories(&conn).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn saves_and_lists_a_highlight_with_its_page_category_position_and_text() {
         let (_dir, conn, paper) = library_with_paper();
-        let saved = add_highlight(&conn, &paper, &new(4, HighlightColor::Blue, vec![LINE])).unwrap();
+        let blue = category(&conn, PaletteColor::Blue);
+        let saved = add_highlight(&conn, &paper, &new(&conn, 4, PaletteColor::Blue, vec![LINE])).unwrap();
         assert_eq!(saved.page, 4);
-        assert_eq!(saved.color, HighlightColor::Blue);
+        assert_eq!(saved.category_id, blue);
         assert_eq!(saved.text, "Feed conversion ratio was 1.4");
         assert_eq!(saved.rects, [LINE]);
         assert_eq!(saved.note, "");
@@ -203,7 +286,7 @@ mod tests {
     #[test]
     fn stays_after_the_library_is_opened_again() {
         let (dir, conn, paper) = library_with_paper();
-        let saved = add_highlight(&conn, &paper, &new(2, HighlightColor::Green, vec![LINE])).unwrap();
+        let saved = add_highlight(&conn, &paper, &new(&conn, 2, PaletteColor::Green, vec![LINE])).unwrap();
         drop(conn);
         let conn = crate::db::library::open_library(dir.path()).unwrap().conn;
         assert_eq!(list_highlights(&conn, &paper).unwrap(), [saved]);
@@ -213,44 +296,45 @@ mod tests {
     fn lists_by_page_and_only_for_the_paper() {
         let (_dir, conn, paper) = library_with_paper();
         let other: String = conn.query_row("INSERT INTO paper DEFAULT VALUES RETURNING id", [], |r| r.get(0)).unwrap();
-        add_highlight(&conn, &paper, &new(5, HighlightColor::Red, vec![LINE])).unwrap();
-        add_highlight(&conn, &paper, &new(1, HighlightColor::Yellow, vec![LINE])).unwrap();
-        add_highlight(&conn, &other, &new(3, HighlightColor::Green, vec![LINE])).unwrap();
+        add_highlight(&conn, &paper, &new(&conn, 5, PaletteColor::Red, vec![LINE])).unwrap();
+        add_highlight(&conn, &paper, &new(&conn, 1, PaletteColor::Yellow, vec![LINE])).unwrap();
+        add_highlight(&conn, &other, &new(&conn, 3, PaletteColor::Green, vec![LINE])).unwrap();
         let pages: Vec<u32> = list_highlights(&conn, &paper).unwrap().iter().map(|h| h.page).collect();
         assert_eq!(pages, [1, 5]);
     }
 
     #[test]
-    fn colors_are_sent_as_the_stored_names() {
-        let json = serde_json::to_string(&[HighlightColor::Green, HighlightColor::Red, HighlightColor::Blue, HighlightColor::Yellow]).unwrap();
-        assert_eq!(json, r#"["green","red","blue","yellow"]"#);
-        let parsed: NewHighlight =
-            serde_json::from_str(r#"{"page":1,"color":"yellow","text":"t","rects":[{"x":0,"y":0,"w":1,"h":1}]}"#).unwrap();
-        assert_eq!(parsed.color, HighlightColor::Yellow);
-        assert!(serde_json::from_str::<NewHighlight>(r#"{"page":1,"color":"purple","text":"t","rects":[]}"#).is_err());
+    fn reads_what_the_ui_sends() {
+        let parsed: NewHighlight = serde_json::from_str(
+            r#"{"page":1,"categoryId":"abc","text":"t","rects":[{"x":0,"y":0,"w":1,"h":1}]}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed.category_id, "abc");
     }
 
     #[test]
-    fn refuses_highlights_that_are_not_on_the_page() {
+    fn refuses_highlights_that_are_not_on_the_page_or_without_a_category() {
         let (_dir, conn, paper) = library_with_paper();
+        let red = |page, rects| new(&conn, page, PaletteColor::Red, rects);
         let bad = [
-            new(0, HighlightColor::Red, vec![LINE]),
-            new(1, HighlightColor::Red, vec![]),
-            new(1, HighlightColor::Red, vec![Rect { x: 0.9, y: 0.1, w: 0.2, h: 0.02 }]),
-            new(1, HighlightColor::Red, vec![Rect { x: -0.1, y: 0.1, w: 0.2, h: 0.02 }]),
-            new(1, HighlightColor::Red, vec![Rect { x: 0.1, y: 0.1, w: 0.0, h: 0.02 }]),
-            new(1, HighlightColor::Red, vec![Rect { x: f64::NAN, y: 0.1, w: 0.2, h: 0.02 }]),
-            new(1, HighlightColor::Red, vec![LINE; MAX_RECTS + 1]),
-            NewHighlight { text: " \n ".into(), ..new(1, HighlightColor::Red, vec![LINE]) },
+            red(0, vec![LINE]),
+            red(1, vec![]),
+            red(1, vec![Rect { x: 0.9, y: 0.1, w: 0.2, h: 0.02 }]),
+            red(1, vec![Rect { x: -0.1, y: 0.1, w: 0.2, h: 0.02 }]),
+            red(1, vec![Rect { x: 0.1, y: 0.1, w: 0.0, h: 0.02 }]),
+            red(1, vec![Rect { x: f64::NAN, y: 0.1, w: 0.2, h: 0.02 }]),
+            red(1, vec![LINE; MAX_RECTS + 1]),
+            NewHighlight { text: " \n ".into(), ..red(1, vec![LINE]) },
+            NewHighlight { category_id: "no-such-category".into(), ..red(1, vec![LINE]) },
         ];
         for highlight in &bad {
             assert!(add_highlight(&conn, &paper, highlight).is_err(), "{highlight:?}");
         }
-        assert!(add_highlight(&conn, "no-such-paper", &new(1, HighlightColor::Red, vec![LINE])).is_err());
+        assert!(add_highlight(&conn, "no-such-paper", &red(1, vec![LINE])).is_err());
         assert!(list_highlights(&conn, &paper).unwrap().is_empty());
         // The whole page is fine.
         let page = Rect { x: 0.0, y: 0.0, w: 1.0, h: 1.0 };
-        assert!(add_highlight(&conn, &paper, &new(1, HighlightColor::Red, vec![page])).is_ok());
+        assert!(add_highlight(&conn, &paper, &red(1, vec![page])).is_ok());
     }
 
     #[test]
@@ -260,7 +344,7 @@ mod tests {
         conn.execute("UPDATE paper SET decision = 'include' WHERE id = ?1", [&paper]).unwrap();
         let before: String =
             conn.query_row("SELECT decision || last_page || text_status FROM paper", [], |r| r.get(0)).unwrap();
-        add_highlight(&conn, &paper, &new(1, HighlightColor::Red, vec![LINE])).unwrap();
+        add_highlight(&conn, &paper, &new(&conn, 1, PaletteColor::Red, vec![LINE])).unwrap();
         let after: String =
             conn.query_row("SELECT decision || last_page || text_status FROM paper", [], |r| r.get(0)).unwrap();
         assert_eq!(before, after);
@@ -269,10 +353,11 @@ mod tests {
     #[test]
     fn a_damaged_row_is_left_out_of_the_list() {
         let (_dir, conn, paper) = library_with_paper();
-        add_highlight(&conn, &paper, &new(1, HighlightColor::Red, vec![LINE])).unwrap();
+        add_highlight(&conn, &paper, &new(&conn, 1, PaletteColor::Red, vec![LINE])).unwrap();
         conn.execute(
-            "INSERT INTO highlight (paper_id, page, color, text, rects) VALUES (?1, 2, 'red', 't', '{\"not\":\"a list\"}')",
-            [&paper],
+            "INSERT INTO highlight (paper_id, page, highlight_category_id, text, rects)
+             VALUES (?1, 2, ?2, 't', '{\"not\":\"a list\"}')",
+            [&paper, &category(&conn, PaletteColor::Red)],
         )
         .unwrap();
         assert_eq!(list_highlights(&conn, &paper).unwrap().len(), 1);

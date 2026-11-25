@@ -42,17 +42,30 @@
   /* AI suggestions */
   --ai-ink: light-dark(#5b4a82, #b3a3db);
 
-  /* Highlight fills on the PDF page */
-  --hl-include-fill: light-dark(rgb(76 195 138 / 38%), rgb(76 195 138 / 45%));
-  --hl-exclude-fill: light-dark(rgb(240 105 94 / 36%), rgb(240 105 94 / 45%));
-  --hl-method-fill: light-dark(rgb(60 196 224 / 38%), rgb(60 196 224 / 45%));
-  --hl-result-fill: light-dark(rgb(250 204 21 / 50%), rgb(250 204 21 / 45%));
+  /* Highlight palette (PRD FR-08.6): one color per highlight category of a library.
+     Named by color, because each library names its categories. The first 4 are the
+     colors of the default categories Inclusion, Exclusion, Method, Result.
+     Blue is cyan on purpose, away from the accent. */
 
-  /* Highlight swatches in popovers, legends, and cards */
-  --hl-include-swatch: light-dark(#2f8a57, #5fc48a);
-  --hl-exclude-swatch: light-dark(#c0443a, #ee7a6f);
-  --hl-method-swatch: light-dark(#0b7f9c, #4fc9e6);
-  --hl-result-swatch: light-dark(#946c00, #e3b53a);
+  /* Fills on the PDF page */
+  --hl-green-fill: light-dark(rgb(76 195 138 / 38%), rgb(76 195 138 / 45%));
+  --hl-red-fill: light-dark(rgb(240 105 94 / 36%), rgb(240 105 94 / 45%));
+  --hl-blue-fill: light-dark(rgb(60 196 224 / 38%), rgb(60 196 224 / 45%));
+  --hl-yellow-fill: light-dark(rgb(250 204 21 / 50%), rgb(250 204 21 / 45%));
+  --hl-purple-fill: light-dark(rgb(167 139 250 / 40%), rgb(167 139 250 / 45%));
+  --hl-orange-fill: light-dark(rgb(249 115 22 / 34%), rgb(249 115 22 / 45%));
+  --hl-pink-fill: light-dark(rgb(236 102 170 / 34%), rgb(236 102 170 / 45%));
+  --hl-gray-fill: light-dark(rgb(148 155 166 / 42%), rgb(148 155 166 / 50%));
+
+  /* Swatches in popovers, legends, and cards: always next to the category name */
+  --hl-green-swatch: light-dark(#2f8a57, #5fc48a);
+  --hl-red-swatch: light-dark(#c0443a, #ee7a6f);
+  --hl-blue-swatch: light-dark(#0b7f9c, #4fc9e6);
+  --hl-yellow-swatch: light-dark(#946c00, #e3b53a);
+  --hl-purple-swatch: light-dark(#7b52c7, #b39cf2);
+  --hl-orange-swatch: light-dark(#b55410, #f0a060);
+  --hl-pink-swatch: light-dark(#b23a7a, #ee8cc0);
+  --hl-gray-swatch: light-dark(#6b7078, #a9aeb6);
 
   /* PDF page modes (FR-02.2), chosen in the reader and independent of the app theme.
      Dark inverts the drawing and turns the hues back, so charts keep their colors. */

@@ -55,10 +55,10 @@ const pairs: [string, string, number][] = [
   ["border-control", "surface-app", 3],
   ["focus-ring", "surface-panel", 3],
   ["focus-ring", "surface-app", 3],
-  ["hl-include-swatch", "surface-panel", 3],
-  ["hl-exclude-swatch", "surface-panel", 3],
-  ["hl-method-swatch", "surface-panel", 3],
-  ["hl-result-swatch", "surface-panel", 3],
+  // The highlight palette (PRD FR-08.6).
+  ...["green", "red", "blue", "yellow", "purple", "orange", "pink", "gray"].map(
+    (color): [string, string, number] => [`hl-${color}-swatch`, "surface-panel", 3],
+  ),
 ];
 
 describe.each([

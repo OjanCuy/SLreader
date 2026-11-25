@@ -7,8 +7,8 @@
 <script lang="ts">
   import { TextLayer, type PDFDocumentProxy, type RenderTask } from "pdfjs-dist";
   import { untrack } from "svelte";
-  import type { Highlight, PageMode } from "../lib/api";
-  import { highlightName, kindOf } from "./highlights";
+  import type { PageMode } from "../lib/api";
+  import type { PageMark } from "./highlights";
   import { canvasPixelRatio, CSS_PER_POINT, type Box } from "./layout";
   import { isCancelled } from "./pdfjs";
   import { segments, type Match } from "./search";
@@ -28,8 +28,8 @@
     reveal?: number;
     /** Where the current result is on the page, once it can be measured. */
     onactive?: (box: Box) => void;
-    /** The highlights on this page (FR-03.2). */
-    highlights?: Highlight[];
+    /** The highlights on this page, with their category's color and name (FR-03.2). */
+    highlights?: PageMark[];
   }
 
   let {
@@ -161,10 +161,11 @@
   <div class="highlights">
     {#each highlights as highlight (highlight.id)}
       <div
-        class="highlight {kindOf(highlight.color).token}"
+        class="highlight"
         role="img"
-        aria-label={highlightName(highlight.color, highlight.page)}
+        aria-label={highlight.name}
         data-highlight={highlight.id}
+        style:--hl-fill="var(--hl-{highlight.color}-fill)"
       >
         {#each highlight.rects as rect, index (index)}
           <div
@@ -235,25 +236,11 @@
     pointer-events: none;
   }
 
+  /* The fill is the category's palette color (tokens.css, --hl-<color>-fill). */
   .hl-rect {
     position: absolute;
+    background: var(--hl-fill);
     mix-blend-mode: multiply;
-  }
-
-  .include .hl-rect {
-    background: var(--hl-include-fill);
-  }
-
-  .exclude .hl-rect {
-    background: var(--hl-exclude-fill);
-  }
-
-  .method .hl-rect {
-    background: var(--hl-method-fill);
-  }
-
-  .result .hl-rect {
-    background: var(--hl-result-fill);
   }
 
   /* On a dark page "multiply" would hide them (Brief Section 3, T-18). */

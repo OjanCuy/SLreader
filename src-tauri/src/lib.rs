@@ -81,6 +81,7 @@ pub fn run() {
             commands::read_paper_pdf,
             commands::attach_pdf,
             commands::extract_locked_paper_text,
+            commands::list_highlight_categories,
             commands::list_highlights,
             commands::add_highlight,
             commands::delete_paper,

@@ -1,30 +1,56 @@
 import { describe, expect, it } from "vitest";
+import type { Highlight, HighlightCategory, PaletteColor } from "../lib/api";
 import {
+  categoryForKey,
+  categoryKey,
   cleanText,
   crossPageMessage,
-  groupHighlights,
-  HIGHLIGHT_KINDS,
   highlightName,
   mergeLines,
+  pageMarks,
   toShares,
 } from "./highlights";
-import type { Highlight } from "../lib/api";
 
-describe("highlight colors (FR-03.1)", () => {
-  it("has 4 fixed colors with their labels and keys, in popover order", () => {
-    expect(HIGHLIGHT_KINDS.map((kind) => [kind.color, kind.label, kind.key])).toEqual([
-      ["green", "Inclusion", "1"],
-      ["red", "Exclusion", "2"],
-      ["blue", "Method", "3"],
-      ["yellow", "Result", "4"],
-    ]);
+const category = (id: string, label: string, color: PaletteColor, sortOrder = 0): HighlightCategory => ({
+  id,
+  label,
+  color,
+  sortOrder,
+});
+
+describe("highlight categories (FR-03.1, FR-08.6)", () => {
+  const eight = (["green", "red", "blue", "yellow", "purple", "orange", "pink", "gray"] as const).map(
+    (color, index) => category(`c${index}`, `Category ${index + 1}`, color, index),
+  );
+
+  it("gives keys 1 to 8 in popover order", () => {
+    expect([0, 1, 7].map(categoryKey)).toEqual(["1", "2", "8"]);
+    expect(categoryKey(8)).toBeNull();
+    expect(categoryKey(-1)).toBeNull();
+    expect(categoryForKey(eight, "8")?.color).toBe("gray");
+    expect(categoryForKey(eight, "1")?.color).toBe("green");
+    expect(categoryForKey(eight.slice(0, 4), "5")).toBeNull();
+    expect(categoryForKey(eight, "9")).toBeNull();
+    expect(categoryForKey(eight, "a")).toBeNull();
   });
 
-  it("names a mark by what its color means and its page", () => {
-    expect(highlightName("red", 4)).toBe("Highlight, supports exclusion, page 4");
-    expect(highlightName("green", 1)).toBe("Highlight, supports inclusion, page 1");
-    expect(highlightName("blue", 2)).toBe("Highlight, method, page 2");
-    expect(highlightName("yellow", 9)).toBe("Highlight, quantitative result, page 9");
+  it("names a mark by its category and page", () => {
+    expect(highlightName("Exclusion", 4)).toBe("Highlight, Exclusion, page 4");
+    expect(highlightName("Sample size", 1)).toBe("Highlight, Sample size, page 1");
+  });
+
+  it("draws each highlight with its category's color and name, by page", () => {
+    const at = (id: string, page: number, categoryId: string) =>
+      ({ id, page, categoryId, rects: [{ x: 0, y: 0, w: 1, h: 0.1 }] }) as Highlight;
+    const categories = [category("a", "Method", "blue"), category("b", "Site", "orange")];
+    const pages = pageMarks([at("h1", 3, "a"), at("h2", 1, "b"), at("h3", 3, "b"), at("h4", 2, "gone")], categories);
+    expect(pages.get(3)?.map((mark) => [mark.id, mark.color, mark.name])).toEqual([
+      ["h1", "blue", "Highlight, Method, page 3"],
+      ["h3", "orange", "Highlight, Site, page 3"],
+    ]);
+    expect(pages.get(1)?.map((mark) => mark.id)).toEqual(["h2"]);
+    // A highlight whose category is unknown is not drawn.
+    expect(pages.get(2)).toBeUndefined();
   });
 
   it("says a highlight can't cross pages (PRD Section 8)", () => {
@@ -78,13 +104,5 @@ describe("selection rectangles (FR-03.2)", () => {
 
   it("keeps one space between words, also across line ends", () => {
     expect(cleanText("  Feed conversion\n ratio   was\t1.4 ")).toBe("Feed conversion ratio was 1.4");
-  });
-
-  it("groups highlights by page", () => {
-    const at = (id: string, page: number) => ({ id, page }) as Highlight;
-    const pages = groupHighlights([at("a", 3), at("b", 1), at("c", 3)]);
-    expect(pages.get(3)?.map((h) => h.id)).toEqual(["a", "c"]);
-    expect(pages.get(1)?.map((h) => h.id)).toEqual(["b"]);
-    expect(pages.get(2)).toBeUndefined();
   });
 });

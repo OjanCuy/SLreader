@@ -242,11 +242,20 @@ describe("highlights (FR-03.1, FR-03.2, FR-03.5)", () => {
     bounds: { left: 100, top: 200, right: 400, bottom: 212 },
   };
 
+  /** The 4 defaults (FR-03.1). */
+  const DEFAULTS: api.HighlightCategory[] = [
+    { id: "c-inc", label: "Inclusion", color: "green", sortOrder: 0 },
+    { id: "c-exc", label: "Exclusion", color: "red", sortOrder: 1 },
+    { id: "c-met", label: "Method", color: "blue", sortOrder: 2 },
+    { id: "c-res", label: "Result", color: "yellow", sortOrder: 3 },
+  ];
+
   beforeEach(() => {
     mocked.listHighlights.mockResolvedValue([]);
+    mocked.listHighlightCategories.mockResolvedValue(DEFAULTS);
     mocked.addHighlight.mockImplementation(async (_session, _paper, highlight) => ({
       ...highlight,
-      id: `h-${highlight.color}`,
+      id: `h-${highlight.categoryId}`,
       note: "",
       extractionTagId: null,
       createdAt: "2026-11-26T00:00:00Z",
@@ -268,21 +277,29 @@ describe("highlights (FR-03.1, FR-03.2, FR-03.5)", () => {
 
   const colorButton = (name: string) => screen.queryByRole("button", { name });
 
-  it("offers the 4 colors for a selection and saves the picked one", async () => {
+  it("offers the library's categories for a selection and saves the picked one", async () => {
     await open();
+    expect(mocked.listHighlightCategories).toHaveBeenCalledWith(7);
     expect(colorButton("Method")).toBeNull();
     await selectText();
-    for (const name of ["Inclusion", "Exclusion", "Method", "Result"]) expect(colorButton(name)).toBeTruthy();
+    const buttons = screen.getAllByRole("button").filter((button) => button.hasAttribute("aria-keyshortcuts"));
+    expect(buttons.map((button) => [button.textContent?.trim(), button.getAttribute("aria-keyshortcuts")])).toEqual([
+      ["Inclusion", "1"],
+      ["Exclusion", "2"],
+      ["Method", "3"],
+      ["Result", "4"],
+    ]);
 
     await fireEvent.click(colorButton("Method")!);
     expect(mocked.addHighlight).toHaveBeenCalledExactlyOnceWith(7, "p1", {
       page: 1,
-      color: "blue",
+      categoryId: "c-met",
       text: "Feed conversion ratio was 1.4",
       rects: SELECTED.rects,
     });
     expect(colorButton("Method")).toBeNull();
-    const mark = await screen.findByRole("img", { name: "Highlight, method, page 1" });
+    const mark = await screen.findByRole("img", { name: "Highlight, Method, page 1" });
+    expect(mark.getAttribute("style")).toContain("var(--hl-blue-fill)");
     const piece = mark.querySelector<HTMLElement>(".hl-rect")!;
     expect([piece.style.left, piece.style.top, piece.style.width, piece.style.height]).toEqual([
       "10%",
@@ -292,11 +309,34 @@ describe("highlights (FR-03.1, FR-03.2, FR-03.5)", () => {
     ]);
   });
 
-  it("picks with the keys 1–4 and closes with Esc", async () => {
+  it("shows categories the user named, in their colors, up to key 8", async () => {
+    const eight: api.HighlightCategory[] = (
+      ["gray", "pink", "orange", "purple", "yellow", "blue", "red", "green"] as const
+    ).map((color, index) => ({ id: `c${index}`, label: `Tag ${index + 1}`, color, sortOrder: index }));
+    mocked.listHighlightCategories.mockResolvedValue(eight);
+    await open();
+    await selectText();
+    expect(colorButton("Tag 8")?.querySelector(".swatch")?.getAttribute("style")).toContain(
+      "var(--hl-green-swatch)",
+    );
+    await fireEvent.keyDown(window, { key: "8" });
+    expect(mocked.addHighlight).toHaveBeenLastCalledWith(7, "p1", expect.objectContaining({ categoryId: "c7" }));
+    expect(await screen.findByRole("img", { name: "Highlight, Tag 8, page 1" })).toBeTruthy();
+  });
+
+  it("ignores a key with no category", async () => {
+    await open();
+    await selectText();
+    await fireEvent.keyDown(window, { key: "5" });
+    expect(mocked.addHighlight).not.toHaveBeenCalled();
+    expect(colorButton("Inclusion")).toBeTruthy();
+  });
+
+  it("picks with the number keys and closes with Esc", async () => {
     await open();
     await selectText();
     await fireEvent.keyDown(window, { key: "4" });
-    expect(mocked.addHighlight).toHaveBeenLastCalledWith(7, "p1", expect.objectContaining({ color: "yellow" }));
+    expect(mocked.addHighlight).toHaveBeenLastCalledWith(7, "p1", expect.objectContaining({ categoryId: "c-res" }));
 
     await selectText();
     await fireEvent.keyDown(window, { key: "Escape" });
@@ -317,7 +357,7 @@ describe("highlights (FR-03.1, FR-03.2, FR-03.5)", () => {
     await selectText({ ...SELECTED, crossed: true });
     await fireEvent.click(colorButton("Exclusion")!);
     expect(await screen.findByText("Highlights can't cross pages; saved on page 1.")).toBeTruthy();
-    expect(mocked.addHighlight).toHaveBeenCalledWith(7, "p1", expect.objectContaining({ page: 1, color: "red" }));
+    expect(mocked.addHighlight).toHaveBeenCalledWith(7, "p1", expect.objectContaining({ page: 1, categoryId: "c-exc" }));
   });
 
   it("keeps the highlight to try again when saving fails", async () => {
@@ -329,7 +369,7 @@ describe("highlights (FR-03.1, FR-03.2, FR-03.5)", () => {
     expect(screen.queryByRole("img", { name: /^Highlight/ })).toBeNull();
 
     await fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    expect(await screen.findByRole("img", { name: "Highlight, supports inclusion, page 1" })).toBeTruthy();
+    expect(await screen.findByRole("img", { name: "Highlight, Inclusion, page 1" })).toBeTruthy();
     expect(mocked.addHighlight).toHaveBeenCalledTimes(2);
     expect(mocked.addHighlight.mock.calls[0]).toEqual(mocked.addHighlight.mock.calls[1]);
   });
@@ -346,7 +386,7 @@ describe("highlights (FR-03.1, FR-03.2, FR-03.5)", () => {
       {
         id: "h1",
         page: 2,
-        color: "red",
+        categoryId: "c-exc",
         text: "Pond trial",
         rects: [{ x: 0.1, y: 0.5, w: 0.3, h: 0.02 }],
         note: "",
@@ -356,7 +396,7 @@ describe("highlights (FR-03.1, FR-03.2, FR-03.5)", () => {
     ]);
     await open();
     expect(mocked.listHighlights).toHaveBeenCalledWith(7, "p1");
-    expect(await screen.findByRole("img", { name: "Highlight, supports exclusion, page 2" })).toBeTruthy();
+    expect(await screen.findByRole("img", { name: "Highlight, Exclusion, page 2" })).toBeTruthy();
   });
 
   it("opens the PDF even when the highlights cannot be read", async () => {
@@ -364,6 +404,15 @@ describe("highlights (FR-03.1, FR-03.2, FR-03.5)", () => {
     mocked.listHighlights.mockRejectedValue({ code: "other", detail: "busy" });
     await open();
     expect(screen.queryByRole("img", { name: /^Highlight/ })).toBeNull();
+  });
+
+  it("makes no highlights when the categories cannot be read", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mocked.listHighlightCategories.mockRejectedValue({ code: "other", detail: "busy" });
+    await open();
+    await selectText();
+    expect(colorButton("Inclusion")).toBeNull();
+    expect(readSelection).not.toHaveBeenCalled();
   });
 });
 

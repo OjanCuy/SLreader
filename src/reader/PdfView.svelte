@@ -10,10 +10,10 @@
 -->
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import type { Highlight, HighlightColor, NewHighlight, PageMode } from "../lib/api";
+  import type { Highlight, HighlightCategory, NewHighlight, PageMode } from "../lib/api";
   import SearchField from "../lib/components/SearchField.svelte";
   import HighlightPopover from "./HighlightPopover.svelte";
-  import { groupHighlights, HIGHLIGHT_KINDS } from "./highlights";
+  import { categoryForKey, pageMarks } from "./highlights";
   import { readSelection, type PageSelection } from "./selection";
   import {
     clampZoom,
@@ -51,8 +51,10 @@
     onmode?: (mode: PageMode) => void;
     /** The paper's highlights, drawn on their pages (FR-03.2). */
     highlights?: Highlight[];
+    /** The library's highlight categories, in their order (FR-03.1). */
+    categories?: HighlightCategory[];
     /**
-     * The user picked a color for a selection. `crossed`: the selection went past its
+     * The user picked a category for a selection. `crossed`: the selection went past its
      * first page, and only that page is kept (FR-03.5).
      */
     onhighlight?: (highlight: NewHighlight, crossed: boolean) => void;
@@ -65,6 +67,7 @@
     mode = "normal",
     onmode,
     highlights = [],
+    categories = [],
     onhighlight,
   }: Props = $props();
 
@@ -218,14 +221,14 @@
 
   // ---- Highlights (FR-03.1, FR-03.2, FR-03.5) ----
 
-  const highlightsByPage = $derived(groupHighlights(highlights));
+  const marksByPage = $derived(pageMarks(highlights, categories));
 
   /** The selection the popover is open for. */
   let picking = $state.raw<PageSelection | null>(null);
 
   /** Opens the popover for the current selection, or closes it when there is none. */
   function checkSelection() {
-    if (!onhighlight) return;
+    if (!onhighlight || categories.length === 0) return;
     picking = readSelection(window.getSelection(), scroller);
   }
 
@@ -239,15 +242,18 @@
     if (event.shiftKey || event.key === "Shift") checkSelection();
   }
 
-  function pick(color: HighlightColor) {
+  function pick(category: HighlightCategory) {
     const chosen = picking;
     picking = null;
     if (!chosen) return;
     window.getSelection()?.removeAllRanges();
-    onhighlight?.({ page: chosen.page, color, text: chosen.text, rects: chosen.rects }, chosen.crossed);
+    onhighlight?.(
+      { page: chosen.page, categoryId: category.id, text: chosen.text, rects: chosen.rects },
+      chosen.crossed,
+    );
   }
 
-  /** Keys 1–4 pick a color and Esc closes, while the popover is open (Brief O-03). */
+  /** Keys 1–8 pick a category and Esc closes, while the popover is open (Brief O-03). */
   function pickByKey(event: KeyboardEvent): boolean {
     const target = event.target instanceof Element ? event.target : null;
     if (target?.closest("input, textarea, select, [contenteditable]")) return false;
@@ -257,10 +263,10 @@
       return true;
     }
     if (event.ctrlKey || event.altKey || event.metaKey) return false;
-    const kind = HIGHLIGHT_KINDS.find((each) => each.key === event.key);
-    if (!kind) return false;
+    const category = categoryForKey(categories, event.key);
+    if (!category) return false;
     event.preventDefault();
-    pick(kind.color);
+    pick(category);
     return true;
   }
 
@@ -331,7 +337,7 @@
               number={slot + 1}
               {zoom}
               {mode}
-              highlights={highlightsByPage.get(slot + 1)}
+              highlights={marksByPage.get(slot + 1)}
               matches={matchesByPage.get(slot)}
               active={active?.page === slot ? active : null}
               reveal={active?.page === slot ? reveal : 0}
@@ -343,7 +349,7 @@
     </div>
   </div>
   {#if picking}
-    <HighlightPopover bounds={picking.bounds} onpick={pick} />
+    <HighlightPopover {categories} bounds={picking.bounds} onpick={pick} />
   {/if}
 </div>
 

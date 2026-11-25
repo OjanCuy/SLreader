@@ -189,8 +189,16 @@ export function extractLockedPaperText(session: number, paperId: string, passwor
 
 // ---- Highlights (FR-03.1, FR-03.2). Types mirror src-tauri/src/highlights.rs. ----
 
-/** green = supports inclusion, red = supports exclusion, blue = method, yellow = result. */
-export type HighlightColor = "green" | "red" | "blue" | "yellow";
+/** The highlight palette (FR-08.6). Each color is used by one category of a library at most. */
+export type PaletteColor = "green" | "red" | "blue" | "yellow" | "purple" | "orange" | "pink" | "gray";
+
+/** A highlight category of the open library: 1 to 8 per library, in their order. */
+export interface HighlightCategory {
+  id: string;
+  label: string;
+  color: PaletteColor;
+  sortOrder: number;
+}
 
 /** An area of a page as shares (0 to 1): left, top, width, height. */
 export interface HighlightRect {
@@ -203,7 +211,7 @@ export interface HighlightRect {
 export interface NewHighlight {
   /** 1-based. */
   page: number;
-  color: HighlightColor;
+  categoryId: string;
   text: string;
   rects: HighlightRect[];
 }
@@ -214,6 +222,11 @@ export interface Highlight extends NewHighlight {
   extractionTagId: string | null;
   /** UTC, ISO 8601. */
   createdAt: string;
+}
+
+/** The highlight categories of the open library, in their order (FR-03.1). */
+export function listHighlightCategories(session: number): Promise<HighlightCategory[]> {
+  return invoke("list_highlight_categories", { session });
 }
 
 /** The highlights of a paper, by page. */
