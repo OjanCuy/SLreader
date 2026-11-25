@@ -11,6 +11,7 @@ import {
 } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { PageSize } from "./layout";
+import type { TextItem } from "./search";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -57,6 +58,27 @@ export async function openPdf(data: ArrayBuffer): Promise<OpenedPdf> {
     const name = (failure as { name?: string } | null)?.name;
     throw new PdfOpenError(name === "PasswordException", failure);
   }
+}
+
+/**
+ * The text items of every page, for searching. They are the same items, in the same
+ * order, as in the page's text layer. A page whose text cannot be read counts as empty.
+ * Rejects when the document is closed meanwhile.
+ */
+export async function readPageTexts(doc: PDFDocumentProxy): Promise<TextItem[][]> {
+  const pages: TextItem[][] = [];
+  // One page at a time, so that drawing pages is not held up.
+  for (let number = 1; number <= doc.numPages; number++) {
+    const page = await doc.getPage(number);
+    try {
+      const { items } = await page.getTextContent();
+      pages.push(items.filter((item) => "str" in item));
+    } catch (failure) {
+      console.error(`The text of page ${number} could not be read`, failure);
+      pages.push([]);
+    }
+  }
+  return pages;
 }
 
 /** PDF.js rejects a render or text layer that was cancelled on purpose with this. */

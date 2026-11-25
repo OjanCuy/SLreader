@@ -1,8 +1,9 @@
 <!--
-  ReaderToolbar (Brief Section 6, S-02): zoom out / in, Fit width, and the page field.
-  Search and page mode join it in T-17 and T-18.
+  ReaderToolbar (Brief Section 6, S-02): zoom out / in, Fit width, the page field,
+  and search. Page mode joins it in T-18.
 -->
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import Button from "../lib/components/Button.svelte";
   import IconButton from "../lib/components/IconButton.svelte";
   import { MAX_ZOOM, MIN_ZOOM, parsePage, zoomLabel } from "./layout";
@@ -16,9 +17,11 @@
     onzoomin: () => void;
     onfitwidth: () => void;
     ongotopage: (page: number) => void;
+    /** The SearchField. */
+    search: Snippet;
   }
 
-  let { zoom, page, total, onzoomout, onzoomin, onfitwidth, ongotopage }: Props = $props();
+  let { zoom, page, total, onzoomout, onzoomin, onfitwidth, ongotopage, search }: Props = $props();
 
   const id = $props.id();
   let typed = $state("");
@@ -70,6 +73,7 @@
     />
     <span class="total">/ {total}</span>
   </div>
+  {@render search()}
 </div>
 
 <style>

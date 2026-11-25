@@ -39,6 +39,14 @@ export interface Layout {
   width: number;
 }
 
+/** An area of a page, as shares (0 to 1) of the page's width and height. */
+export interface Box {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
 /** Where the reader is: a page (0-based) and how far down it, as a share of its height. */
 export interface Position {
   page: number;
@@ -121,6 +129,16 @@ export function scrollTopFor(layout: Layout, position: Position): number {
 export function scrollTopForPage(layout: Layout, pageNumber: number): number {
   const page = layout.pages[pageNumber - 1];
   return page ? Math.max(0, page.top - PAGE_GAP) : 0;
+}
+
+/**
+ * The scroll position, in one direction, that brings a target into view: unchanged
+ * when it is already visible, otherwise the target a third of the way into the view.
+ */
+export function scrollToShow(scroll: number, view: number, start: number, size: number): number {
+  const margin = Math.min(PAGE_GAP, view / 4);
+  if (start >= scroll + margin && start + size <= scroll + view - margin) return scroll;
+  return Math.max(0, Math.round(start - view / 3));
 }
 
 export function clampZoom(zoom: number): number {

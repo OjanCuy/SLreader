@@ -54,6 +54,12 @@
   --hl-method-swatch: light-dark(#0b7f9c, #4fc9e6);
   --hl-result-swatch: light-dark(#946c00, #e3b53a);
 
+  /* Search results on the PDF page. One value for both themes: the page is white. The
+     current result also gets a border, so it does not differ by color only. */
+  --search-match-fill: rgb(251 146 60 / 32%);
+  --search-active-fill: rgb(251 146 60 / 55%);
+  --search-active-border: #9a3f06;
+
   /* Typography: use as `font: var(--type-body);` */
   --font-ui: "Inter Variable", "Segoe UI", system-ui, sans-serif;
   --font-paper: "Source Serif 4 Variable", Georgia, serif;

@@ -6,20 +6,73 @@
 -->
 <script lang="ts">
   import { TextLayer, type PDFDocumentProxy, type RenderTask } from "pdfjs-dist";
-  import { canvasPixelRatio, CSS_PER_POINT } from "./layout";
+  import { untrack } from "svelte";
+  import { canvasPixelRatio, CSS_PER_POINT, type Box } from "./layout";
   import { isCancelled } from "./pdfjs";
+  import { segments, type Match } from "./search";
 
   interface Props {
     doc: PDFDocumentProxy;
     /** 1-based. */
     number: number;
     zoom: number;
+    /** The search results on this page. */
+    matches?: Match[];
+    /** The current search result, when it is on this page. */
+    active?: Match | null;
+    /** Changes each time the user moves to a result, also to the same one again. */
+    reveal?: number;
+    /** Where the current result is on the page, once it can be measured. */
+    onactive?: (box: Box) => void;
   }
 
-  let { doc, number, zoom }: Props = $props();
+  let { doc, number, zoom, matches = [], active = null, reveal = 0, onactive }: Props = $props();
 
+  let pageElement: HTMLDivElement;
   let canvasHost: HTMLDivElement;
   let textHost: HTMLDivElement;
+
+  /** The text elements now on screen, one per text item. */
+  let textDivs = $state.raw<HTMLElement[] | null>(null);
+  let marks = $state.raw<(Box & { active: boolean })[]>([]);
+
+  // Measures where the results are in the text layer. The boxes are shares of the page,
+  // so they stay in place while the zoom changes.
+  $effect(() => {
+    const divs = textDivs;
+    const current = active;
+    void reveal;
+    const frame = pageElement.getBoundingClientRect();
+    if (!divs || matches.length === 0 || frame.width <= 0 || frame.height <= 0) {
+      marks = [];
+      return;
+    }
+    const found = matches.flatMap((match) =>
+      boxesOf(match, divs, frame).map((box) => ({ ...box, active: match === current })),
+    );
+    marks = found;
+    const first = found.find((mark) => mark.active);
+    if (first) untrack(() => onactive?.(first));
+  });
+
+  function boxesOf(match: Match, divs: HTMLElement[], frame: DOMRect): Box[] {
+    const length = (item: number) => divs[item]?.textContent?.length ?? 0;
+    return segments(match, length).flatMap(({ item, from, to }) => {
+      const text = divs[item]?.firstChild;
+      if (!text || !divs[item].isConnected || to > length(item)) return [];
+      const range = document.createRange();
+      range.setStart(text, from);
+      range.setEnd(text, to);
+      return Array.from(range.getClientRects())
+        .filter((rect) => rect.width > 0 && rect.height > 0)
+        .map((rect) => ({
+          left: (rect.left - frame.left) / frame.width,
+          top: (rect.top - frame.top) / frame.height,
+          width: rect.width / frame.width,
+          height: rect.height / frame.height,
+        }));
+    });
+  }
 
   $effect(() => {
     const scale = zoom * CSS_PER_POINT;
@@ -50,6 +103,7 @@
       await text.render();
       if (stopped) return;
       textHost.replaceChildren(layer);
+      textDivs = text.textDivs;
     }
 
     draw().catch((failure) => {
@@ -80,8 +134,21 @@
   }
 </script>
 
-<div class="page" style:--total-scale-factor={zoom * CSS_PER_POINT}>
+<div class="page" bind:this={pageElement} style:--total-scale-factor={zoom * CSS_PER_POINT}>
   <div class="canvas" bind:this={canvasHost}></div>
+  <!-- Below the transparent text, so selecting text is not affected. -->
+  <div class="marks" aria-hidden="true">
+    {#each marks as mark, index (index)}
+      <div
+        class="mark"
+        class:active={mark.active}
+        style:left="{mark.left * 100}%"
+        style:top="{mark.top * 100}%"
+        style:width="{mark.width * 100}%"
+        style:height="{mark.height * 100}%"
+      ></div>
+    {/each}
+  </div>
   <div class="text" bind:this={textHost}></div>
 </div>
 
@@ -97,6 +164,24 @@
     display: block;
     width: 100%;
     height: 100%;
+  }
+
+  .marks {
+    position: absolute;
+    inset: 0;
+    overflow: clip;
+    pointer-events: none;
+  }
+
+  .mark {
+    position: absolute;
+    background: var(--search-match-fill);
+    mix-blend-mode: multiply;
+  }
+
+  .mark.active {
+    background: var(--search-active-fill);
+    outline: 2px solid var(--search-active-border);
   }
 
   /* The PDF.js text layer (from pdfjs-dist/web/pdf_viewer.css, reduced to what is

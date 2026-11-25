@@ -15,6 +15,7 @@ import {
   zoomIn,
   zoomLabel,
   zoomOut,
+  scrollToShow,
 } from "./layout";
 
 // US Letter: 612 x 792 points = 816 x 1056 CSS pixels at 100%.
@@ -164,5 +165,22 @@ describe("canvasPixelRatio", () => {
 
   it("falls back to 1 for an unknown screen ratio", () => {
     expect(canvasPixelRatio(816, 1056, 0)).toBe(1);
+  });
+});
+
+describe("scrollToShow", () => {
+  it("does not move when the target is visible", () => {
+    expect(scrollToShow(1000, 600, 1200, 20)).toBe(1000);
+  });
+
+  it("puts a hidden target a third of the way into the view", () => {
+    expect(scrollToShow(0, 600, 1200, 20)).toBe(1000);
+    expect(scrollToShow(2000, 600, 1200, 20)).toBe(1000);
+    // Partly cut off at the bottom edge.
+    expect(scrollToShow(1000, 600, 1590, 20)).toBe(1390);
+  });
+
+  it("never goes before the start", () => {
+    expect(scrollToShow(500, 600, 50, 20)).toBe(0);
   });
 });

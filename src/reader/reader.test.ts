@@ -12,9 +12,11 @@ vi.mock("../lib/api");
 vi.mock("./pdfjs", async (original) => ({
   ...(await original<typeof import("./pdfjs")>()),
   openPdf: vi.fn(),
+  readPageTexts: vi.fn(),
 }));
 const mocked = vi.mocked(api);
 const openPdf = vi.mocked(pdfjs.openPdf);
+const readPageTexts = vi.mocked(pdfjs.readPageTexts);
 
 const LETTER = { width: 612, height: 792 };
 
@@ -183,5 +185,90 @@ describe("ReaderToolbar", () => {
     expect(container.querySelectorAll(".slot")).toHaveLength(300);
     // The view has no height in this test: the first page and one more are drawn.
     expect(container.querySelectorAll(".slot .page").length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("search in the PDF (FR-02.1)", () => {
+  const line = (str: string) => ({ str, hasEOL: true });
+
+  beforeEach(() => {
+    // "fish" once on page 1 and twice on page 3.
+    readPageTexts.mockResolvedValue([[line("Fish farms")], [line("none")], [line("fish and fish")]]);
+  });
+
+  async function open() {
+    const view = show();
+    await screen.findByText("/ 3");
+    const field = screen.getByRole("textbox", { name: "Search in PDF" }) as HTMLInputElement;
+    const count = () => view.container.querySelector(".search [role='status']")!;
+    const type = (value: string) => fireEvent.input(field, { target: { value } });
+    const shows = (text: string) => vi.waitFor(() => expect(count().textContent?.trim()).toBe(text));
+    return { field, count, type, shows };
+  }
+
+  const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
+
+  it("counts results on all pages and reads the text only once", async () => {
+    const { type, shows } = await open();
+    expect(readPageTexts).not.toHaveBeenCalled();
+    await type("fish");
+    await shows("1/3");
+    await type("farms");
+    await shows("1/1");
+    expect(readPageTexts).toHaveBeenCalledTimes(1);
+  });
+
+  it("moves with Enter, Shift+Enter, and the buttons, going round", async () => {
+    const { field, type, shows } = await open();
+    await type("fish");
+    await shows("1/3");
+    await fireEvent.keyDown(field, { key: "Enter" });
+    await shows("2/3");
+    await fireEvent.keyDown(field, { key: "Enter", shiftKey: true });
+    await shows("1/3");
+    await fireEvent.click(button("Previous result"));
+    await shows("3/3");
+    await fireEvent.click(button("Next result"));
+    await shows("1/3");
+  });
+
+  it("shows 0/0 with a warning icon when nothing is found", async () => {
+    const { type, shows, count } = await open();
+    await type("salmon");
+    await shows("0/0");
+    expect(count().querySelector("[data-icon='warning']")).toBeTruthy();
+    expect(button("Next result").disabled).toBe(true);
+    expect(button("Previous result").disabled).toBe(true);
+  });
+
+  it("clears with the button and with Esc", async () => {
+    const { field, type, shows } = await open();
+    expect(button("Clear search").disabled).toBe(true);
+    await type("fish");
+    await shows("1/3");
+    await fireEvent.click(button("Clear search"));
+    expect(field.value).toBe("");
+    await shows("");
+    await type("fish");
+    await fireEvent.keyDown(field, { key: "Escape" });
+    expect(field.value).toBe("");
+    await shows("");
+  });
+
+  it("goes to the search field with Ctrl+F", async () => {
+    const { field } = await open();
+    const notPrevented = await fireEvent.keyDown(window, { key: "f", ctrlKey: true });
+    expect(notPrevented).toBe(false);
+    expect(document.activeElement).toBe(field);
+  });
+
+  it("tries again after the text could not be read", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    readPageTexts.mockRejectedValueOnce(new Error("closed"));
+    const { type, shows } = await open();
+    await type("fish");
+    await vi.waitFor(() => expect(readPageTexts).toHaveBeenCalledTimes(1));
+    await type("fis");
+    await shows("1/3");
   });
 });
