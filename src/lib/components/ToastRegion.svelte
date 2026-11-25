@@ -12,7 +12,12 @@
   {#each ["polite", "assertive"] as const as live (live)}
     <div class="stack" aria-live={live}>
       {#each toasts.filter((t) => (t.tone === "error") === (live === "assertive")) as toast (toast.id)}
-        <Toast tone={toast.tone} message={toast.message} onclose={() => dismissToast(toast.id)} />
+        <Toast
+          tone={toast.tone}
+          message={toast.message}
+          actions={toast.actions}
+          onclose={() => dismissToast(toast.id)}
+        />
       {/each}
     </div>
   {/each}

@@ -119,17 +119,19 @@ pub fn pick_pdfs(app: AppHandle, window: WebviewWindow) -> Vec<String> {
         .collect()
 }
 
-/// Copies PDFs into the open library (FR-01.2 to FR-01.5).
+/// Copies PDFs into the open library (FR-01.2 to FR-01.5). `allow_identical` is the
+/// user's "Add anyway" for a file whose content is already in the library.
 #[tauri::command(async)]
 pub fn import_pdfs(
     current: State<'_, CurrentLibrary>,
     session: u64,
     paths: Vec<String>,
+    allow_identical: bool,
 ) -> Result<ImportReport, LibraryError> {
     let current = lock(&current.0);
     let (conn, folder) = libraries::library_and_folder_for_writing(&current, session)?;
     let paths: Vec<std::path::PathBuf> = paths.into_iter().map(Into::into).collect();
-    papers::import_pdfs(conn, folder, &paths)
+    papers::import_pdfs(conn, folder, &paths, allow_identical)
 }
 
 #[tauri::command(async)]

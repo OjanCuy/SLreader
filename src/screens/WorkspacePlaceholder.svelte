@@ -16,8 +16,8 @@
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Icon from "../lib/components/Icon.svelte";
   import InlineBanner from "../lib/components/InlineBanner.svelte";
-  import { showToast } from "../lib/components/toasts.svelte";
-  import { importMessages } from "../lib/importTexts";
+  import { dismissToast, showToast } from "../lib/components/toasts.svelte";
+  import { ADD_ANYWAY, identicalMessage, importMessages, SKIP } from "../lib/importTexts";
   import { LIBRARY_PROBLEMS } from "../lib/libraryProblems";
   import { CLOUD_WARNING, libraryErrorMessage, libraryTitle } from "../lib/libraryTexts";
   import DropZone from "./DropZone.svelte";
@@ -38,7 +38,13 @@
   let papers = $state<PaperListItem[] | null>(null);
   let importing = $state(false);
 
-  onMount(refresh);
+  /** Open "Add anyway / Skip" questions; they belong to this library only. */
+  const questions: number[] = [];
+
+  onMount(() => {
+    refresh();
+    return () => questions.forEach(dismissToast);
+  });
 
   async function refresh() {
     try {
@@ -56,14 +62,34 @@
     }
     importing = true;
     try {
-      const report = await importPdfs(session, paths);
-      for (const { message, tone } of importMessages(report)) showToast(message, tone);
-      await refresh();
-    } catch (failure) {
-      showToast(libraryErrorMessage(failure, "create"), "error");
+      await runImport(paths, false);
     } finally {
       importing = false;
     }
+  }
+
+  async function runImport(paths: string[], allowIdentical: boolean) {
+    try {
+      const report = await importPdfs(session, paths, allowIdentical);
+      for (const { message, tone } of importMessages(report)) showToast(message, tone);
+      for (const file of report.files) {
+        if (file.outcome === "identical" && file.identicalTo !== null) {
+          ask(file.path, file.identicalTo);
+        }
+      }
+      await refresh();
+    } catch (failure) {
+      showToast(libraryErrorMessage(failure, "create"), "error");
+    }
+  }
+
+  function ask(path: string, existing: string) {
+    const id = showToast(identicalMessage(existing), "neutral", [
+      // Not blocked by a running import: the Rust side handles one at a time.
+      { label: ADD_ANYWAY, onselect: () => runImport([path], true) },
+      { label: SKIP, onselect: () => {} },
+    ]);
+    questions.push(id);
   }
 
   async function upload() {

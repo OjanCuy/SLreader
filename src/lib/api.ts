@@ -93,12 +93,20 @@ export type ImportOutcome =
   | "added"
   | "attached"
   | "already_in_library"
+  | "identical"
   | "not_pdf"
   | "over_limit"
   | "write_failed";
 
 export interface ImportReport {
-  files: { fileName: string; outcome: ImportOutcome }[];
+  files: {
+    fileName: string;
+    /** The file that was given, to import it again after "Add anyway". */
+    path: string;
+    outcome: ImportOutcome;
+    /** Set for "identical": the paper's file with the same content. */
+    identicalTo: string | null;
+  }[];
   /** Files that are now in the library, attached ones included. */
   added: number;
 }
@@ -116,8 +124,12 @@ export function pickPdfs(): Promise<string[]> {
   return invoke("pick_pdfs");
 }
 
-export function importPdfs(session: number, paths: string[]): Promise<ImportReport> {
-  return invoke("import_pdfs", { session, paths });
+export function importPdfs(
+  session: number,
+  paths: string[],
+  allowIdentical = false,
+): Promise<ImportReport> {
+  return invoke("import_pdfs", { session, paths, allowIdentical });
 }
 
 export function listPapers(session: number): Promise<PaperListItem[]> {

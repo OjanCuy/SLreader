@@ -26,6 +26,9 @@ pub enum ImportOutcome {
     Attached,
     /// A paper with this file name already has its file (FR-01.5).
     AlreadyInLibrary,
+    /// Same content as a paper under another name; not imported until the user
+    /// chooses "Add anyway" (PRD Section 8).
+    Identical,
     /// Not a PDF, damaged, or could not be read (FR-01.3).
     NotPdf,
     /// The library already holds 250 papers (FR-01.4).
@@ -38,7 +41,11 @@ pub enum ImportOutcome {
 #[serde(rename_all = "camelCase")]
 pub struct ImportedFile {
     pub file_name: String,
+    /// The file that was given, so the UI can ask to import it again.
+    pub path: String,
     pub outcome: ImportOutcome,
+    /// Set for `Identical`: the file name of the paper with the same content.
+    pub identical_to: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -62,11 +69,13 @@ pub struct PaperListItem {
 }
 
 /// Copies the given files into the library and creates a paper for each (FR-01.2).
-/// One bad file never stops the others (FR-01.3).
+/// One bad file never stops the others (FR-01.3). With `allow_identical` false, a file
+/// with the same content as an existing paper is reported instead of imported.
 pub fn import_pdfs(
     conn: &Connection,
     folder: &Path,
     sources: &[PathBuf],
+    allow_identical: bool,
 ) -> Result<ImportReport, LibraryError> {
     // Names already used by papers, compared without case like Windows does.
     let mut known: Vec<(String, String)> = conn
@@ -81,8 +90,27 @@ pub fn import_pdfs(
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| source.to_string_lossy().into_owned());
-        let outcome = import_one(conn, folder, source, &file_name, &mut known, &mut count)?;
-        files.push(ImportedFile { file_name, outcome });
+        let identical_to = if allow_identical {
+            None
+        } else {
+            find_identical(folder, source, &file_name, &known)
+        };
+        let outcome = import_one(
+            conn,
+            folder,
+            source,
+            &file_name,
+            identical_to.is_some(),
+            &mut known,
+            &mut count,
+        )?;
+        let identical_to = identical_to.filter(|_| outcome == ImportOutcome::Identical);
+        files.push(ImportedFile {
+            file_name,
+            path: source.to_string_lossy().into_owned(),
+            outcome,
+            identical_to,
+        });
     }
     let added = files
         .iter()
@@ -96,6 +124,7 @@ fn import_one(
     folder: &Path,
     source: &Path,
     file_name: &str,
+    is_identical: bool,
     known: &mut Vec<(String, String)>,
     count: &mut i64,
 ) -> Result<ImportOutcome, LibraryError> {
@@ -118,6 +147,9 @@ fn import_one(
 
     if *count >= MAX_PAPERS {
         return Ok(ImportOutcome::OverLimit);
+    }
+    if is_identical {
+        return Ok(ImportOutcome::Identical);
     }
 
     let Ok(stored) = place_file(folder, source, file_name, known) else {
@@ -142,6 +174,27 @@ fn import_one(
             Ok(ImportOutcome::WriteFailed)
         }
     }
+}
+
+/// The file name of a paper whose PDF has exactly the same content as `source`,
+/// stored under a different name. Files of another size are ruled out at once.
+fn find_identical(
+    folder: &Path,
+    source: &Path,
+    file_name: &str,
+    known: &[(String, String)],
+) -> Option<String> {
+    let wanted = format!("{PDF_FOLDER}/{file_name}");
+    known
+        .iter()
+        .filter(|(_, path)| !same_name(path, &wanted))
+        .find(|(_, path)| same_content(source, &folder.join(path)).unwrap_or(false))
+        .map(|(_, path)| display_name(path))
+}
+
+/// "pdfs/kim.pdf" -> "kim.pdf"
+fn display_name(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_string()
 }
 
 struct Stored {
@@ -272,7 +325,7 @@ pub fn list_papers(conn: &Connection, folder: &Path) -> Result<Vec<PaperListItem
         .map(|(id, file_path, title)| PaperListItem {
             id,
             file_missing: file_path.as_ref().is_some_and(|path| !folder.join(path).is_file()),
-            file_name: file_path.map(|path| path.rsplit('/').next().unwrap_or(&path).to_string()),
+            file_name: file_path.as_deref().map(display_name),
             title,
         })
         .collect())
@@ -311,8 +364,17 @@ mod tests {
             path
         }
 
+        /// A valid PDF whose content differs from every other name's.
+        fn pdf(&self, name: &str) -> PathBuf {
+            self.source(name, format!("%PDF-1.4\n{name}\n%%EOF\n").as_bytes())
+        }
+
         fn import(&self, sources: &[PathBuf]) -> ImportReport {
-            import_pdfs(&self.conn, &self.library, sources).unwrap()
+            import_pdfs(&self.conn, &self.library, sources, false).unwrap()
+        }
+
+        fn add_anyway(&self, sources: &[PathBuf]) -> ImportReport {
+            import_pdfs(&self.conn, &self.library, sources, true).unwrap()
         }
 
         fn outcomes(&self, sources: &[PathBuf]) -> Vec<ImportOutcome> {
@@ -352,7 +414,15 @@ mod tests {
         let report = s.import(std::slice::from_ref(&source));
 
         assert_eq!(report.added, 1);
-        assert_eq!(report.files, [ImportedFile { file_name: "Kim 2021.pdf".into(), outcome: Added }]);
+        assert_eq!(
+            report.files,
+            [ImportedFile {
+                file_name: "Kim 2021.pdf".into(),
+                path: source.to_str().unwrap().into(),
+                outcome: Added,
+                identical_to: None,
+            }]
+        );
         assert_eq!(s.stored("Kim 2021.pdf"), PDF);
         // The original stays where it was.
         assert_eq!(std::fs::read(&source).unwrap(), PDF);
@@ -422,7 +492,7 @@ mod tests {
     fn a_bad_file_does_not_stop_the_others() {
         // FR-01.3.
         let s = setup();
-        let sources = [s.source("a.pdf", PDF), s.source("bad.pdf", b"nope"), s.source("b.pdf", PDF)];
+        let sources = [s.pdf("a.pdf"), s.source("bad.pdf", b"nope"), s.pdf("b.pdf")];
         let report = s.import(&sources);
         assert_eq!(report.added, 2);
         assert_eq!(s.files_in_pdfs(), ["a.pdf", "b.pdf"]);
@@ -453,11 +523,13 @@ mod tests {
         let different = b"%PDF-1.4\nthe user's own file\n%%EOF";
         std::fs::write(s.library.join(PDF_FOLDER).join("other.pdf"), different).unwrap();
 
-        let report = s.import(&[s.source("same.pdf", PDF), s.source("other.pdf", PDF)]);
+        let mine = s.pdf("other.pdf");
+        let mine_content = std::fs::read(&mine).unwrap();
+        let report = s.import(&[s.source("same.pdf", PDF), mine]);
         assert_eq!(report.added, 2);
         assert_eq!(s.files_in_pdfs(), ["other (2).pdf", "other.pdf", "same.pdf"]);
         assert_eq!(s.stored("other.pdf"), different);
-        assert_eq!(s.stored("other (2).pdf"), PDF);
+        assert_eq!(s.stored("other (2).pdf"), mine_content);
 
         let names: Vec<_> = list_papers(&s.conn, &s.library)
             .unwrap()
@@ -488,12 +560,71 @@ mod tests {
     #[test]
     fn lists_papers_oldest_first_and_flags_missing_files() {
         let s = setup();
-        s.import(&[s.source("first.pdf", PDF), s.source("second.pdf", PDF)]);
+        s.import(&[s.pdf("first.pdf"), s.pdf("second.pdf")]);
         std::fs::remove_file(s.library.join(PDF_FOLDER).join("first.pdf")).unwrap();
 
         let papers = list_papers(&s.conn, &s.library).unwrap();
         let summary: Vec<_> = papers.iter().map(|p| (p.file_name.as_deref().unwrap(), p.file_missing)).collect();
         assert_eq!(summary, [("first.pdf", true), ("second.pdf", false)]);
+    }
+
+    // ---- T-13: identical content under another name ----
+
+    #[test]
+    fn holds_back_a_file_identical_to_one_in_the_library() {
+        let s = setup();
+        s.import(&[s.source("original.pdf", PDF)]);
+
+        let report = s.import(&[s.source("renamed.pdf", PDF)]);
+        assert_eq!(report.added, 0);
+        assert_eq!(report.files[0].outcome, Identical);
+        assert_eq!(report.files[0].identical_to.as_deref(), Some("original.pdf"));
+        assert_eq!(s.papers(), 1);
+        assert_eq!(s.files_in_pdfs(), ["original.pdf"]);
+    }
+
+    #[test]
+    fn add_anyway_imports_the_identical_file() {
+        let s = setup();
+        s.import(&[s.source("original.pdf", PDF)]);
+        let report = s.add_anyway(&[s.source("renamed.pdf", PDF)]);
+        assert_eq!(report.files[0].outcome, Added);
+        assert_eq!(report.files[0].identical_to, None);
+        assert_eq!(s.files_in_pdfs(), ["original.pdf", "renamed.pdf"]);
+    }
+
+    #[test]
+    fn finds_identical_files_within_one_import_without_stopping_the_others() {
+        let s = setup();
+        let sources = [s.source("a.pdf", PDF), s.source("copy.pdf", PDF), s.pdf("b.pdf")];
+        assert_eq!(s.outcomes(&sources), [Added, Identical, Added]);
+    }
+
+    #[test]
+    fn same_size_but_different_content_is_not_identical() {
+        let s = setup();
+        s.import(&[s.source("a.pdf", b"%PDF-1.4 AAAA %%EOF")]);
+        assert_eq!(s.outcomes(&[s.source("b.pdf", b"%PDF-1.4 BBBB %%EOF")]), [Added]);
+    }
+
+    #[test]
+    fn the_name_and_limit_rules_come_before_the_identical_check() {
+        let s = setup();
+        s.import(&[s.source("a.pdf", PDF)]);
+        assert_eq!(s.outcomes(&[s.source("a.pdf", PDF)]), [AlreadyInLibrary]);
+        s.fill_to(250);
+        assert_eq!(s.outcomes(&[s.source("b.pdf", PDF)]), [OverLimit]);
+        // "Add anyway" cannot pass the limit either.
+        let report = s.add_anyway(&[s.source("c.pdf", PDF)]);
+        assert_eq!(report.files[0].outcome, OverLimit);
+    }
+
+    #[test]
+    fn a_paper_whose_file_is_missing_is_not_compared() {
+        let s = setup();
+        s.import(&[s.source("a.pdf", PDF)]);
+        std::fs::remove_file(s.library.join(PDF_FOLDER).join("a.pdf")).unwrap();
+        assert_eq!(s.outcomes(&[s.source("b.pdf", PDF)]), [Added]);
     }
 
     #[test]
@@ -502,6 +633,9 @@ mod tests {
         let report = serde_json::to_value(s.import(&[s.source("a.pdf", PDF)])).unwrap();
         assert_eq!(report["files"][0]["fileName"], "a.pdf");
         assert_eq!(report["files"][0]["outcome"], "added");
+        for field in ["path", "identicalTo"] {
+            assert!(report["files"][0].get(field).is_some(), "{field} is missing");
+        }
         let paper = serde_json::to_value(&list_papers(&s.conn, &s.library).unwrap()[0]).unwrap();
         for field in ["id", "fileName", "title", "fileMissing"] {
             assert!(paper.get(field).is_some(), "{field} is missing");

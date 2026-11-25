@@ -8,6 +8,12 @@ import { SAVE_ERROR } from "./libraryTexts";
 export const MAX_PAPERS = 250;
 export const DROP_HERE = "Drop PDF files to add them";
 export const ONLY_PDFS = "Only PDF files can be added";
+export const ADD_ANYWAY = "Add anyway";
+export const SKIP = "Skip";
+
+export function identicalMessage(existingFileName: string): string {
+  return `This PDF looks identical to ${existingFileName} already in the library.`;
+}
 
 export interface ImportMessage {
   message: string;

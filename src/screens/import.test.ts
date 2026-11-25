@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../lib/api";
 import type { FileDrag, ImportReport, LibrarySummary } from "../lib/api";
 import { dismissToast, toasts } from "../lib/components/toasts.svelte";
+import ToastRegion from "../lib/components/ToastRegion.svelte";
 import { importMessages } from "../lib/importTexts";
 import WorkspacePlaceholder from "./WorkspacePlaceholder.svelte";
 
@@ -24,7 +25,12 @@ const library = (over: Partial<LibrarySummary> = {}): LibrarySummary => ({
 });
 
 const report = (...files: [string, api.ImportOutcome][]): ImportReport => ({
-  files: files.map(([fileName, outcome]) => ({ fileName, outcome })),
+  files: files.map(([fileName, outcome]) => ({
+    fileName,
+    path: `C:\\d\\${fileName}`,
+    outcome,
+    identicalTo: outcome === "identical" ? "original.pdf" : null,
+  })),
   added: files.filter(([, o]) => o === "added" || o === "attached").length,
 });
 
@@ -71,7 +77,7 @@ describe("importing PDFs", () => {
 
     await fireEvent.click(screen.getAllByRole("button", { name: "Upload PDF" })[0]);
     await vi.waitFor(() => expect(messages()).toEqual(["2 PDFs added."]));
-    expect(mocked.importPdfs).toHaveBeenCalledWith(7, ["C:\\d\\a.pdf", "C:\\d\\b.pdf"]);
+    expect(mocked.importPdfs).toHaveBeenCalledWith(7, ["C:\\d\\a.pdf", "C:\\d\\b.pdf"], false);
     expect(await screen.findByText("a.pdf")).toBeTruthy();
     expect(screen.getByText("PDF file is missing.")).toBeTruthy();
   });
@@ -97,7 +103,11 @@ describe("importing PDFs", () => {
     flushSync();
     expect(screen.queryByText("Drop PDF files to add them")).toBeNull();
     await vi.waitFor(() =>
-      expect(mocked.importPdfs).toHaveBeenCalledWith(7, ["C:\\d\\a.pdf", "C:\\d\\notes.txt"]),
+      expect(mocked.importPdfs).toHaveBeenCalledWith(
+        7,
+        ["C:\\d\\a.pdf", "C:\\d\\notes.txt"],
+        false,
+      ),
     );
   });
 
@@ -132,6 +142,56 @@ describe("importing PDFs", () => {
       ]),
     );
     expect(mocked.importPdfs).not.toHaveBeenCalled();
+  });
+});
+
+describe("identical PDFs", () => {
+  const QUESTION = "This PDF looks identical to original.pdf already in the library.";
+
+  async function uploadIdentical() {
+    mocked.pickPdfs.mockResolvedValue(["C:\\d\\copy.pdf"]);
+    mocked.importPdfs.mockResolvedValueOnce(report(["copy.pdf", "identical"]));
+    const view = render(WorkspacePlaceholder, {
+      library: library(),
+      onswitch: vi.fn(),
+      onshowall: vi.fn(),
+    });
+    render(ToastRegion);
+    await fireEvent.click(screen.getAllByRole("button", { name: "Upload PDF" })[0]);
+    await screen.findByText(QUESTION);
+    return view;
+  }
+
+  it("asks with Add anyway and Skip, and keeps asking until answered", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    await uploadIdentical();
+    vi.advanceTimersByTime(60_000);
+    expect(messages()).toEqual([QUESTION]);
+    expect(screen.getByRole("button", { name: "Add anyway" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Skip" })).toBeTruthy();
+    vi.useRealTimers();
+  });
+
+  it("imports the file after Add anyway", async () => {
+    await uploadIdentical();
+    mocked.importPdfs.mockResolvedValueOnce(report(["copy.pdf", "added"]));
+
+    await fireEvent.click(screen.getByRole("button", { name: "Add anyway" }));
+    await vi.waitFor(() => expect(messages()).toEqual(["1 PDF added."]));
+    expect(mocked.importPdfs).toHaveBeenLastCalledWith(7, ["C:\\d\\copy.pdf"], true);
+  });
+
+  it("does nothing more after Skip", async () => {
+    await uploadIdentical();
+    await fireEvent.click(screen.getByRole("button", { name: "Skip" }));
+    expect(messages()).toEqual([]);
+    expect(mocked.importPdfs).toHaveBeenCalledTimes(1);
+  });
+
+  it("withdraws the question when the library is left", async () => {
+    const view = await uploadIdentical();
+    view.unmount();
+    expect(messages()).toEqual([]);
   });
 });
 

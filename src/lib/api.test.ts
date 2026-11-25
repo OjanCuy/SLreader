@@ -58,7 +58,14 @@ describe("library commands", () => {
     [() => pickFolder(), ["pick_folder"]],
     [() => isCloudFolder("C:/r"), ["is_cloud_folder", { folderPath: "C:/r" }]],
     [() => pickPdfs(), ["pick_pdfs"]],
-    [() => importPdfs(7, ["C:/a.pdf"]), ["import_pdfs", { session: 7, paths: ["C:/a.pdf"] }]],
+    [
+      () => importPdfs(7, ["C:/a.pdf"]),
+      ["import_pdfs", { session: 7, paths: ["C:/a.pdf"], allowIdentical: false }],
+    ],
+    [
+      () => importPdfs(7, ["C:/a.pdf"], true),
+      ["import_pdfs", { session: 7, paths: ["C:/a.pdf"], allowIdentical: true }],
+    ],
     [() => listPapers(7), ["list_papers", { session: 7 }]],
   ] as [() => Promise<unknown>, unknown[]][])("calls %#", async (call, expected) => {
     await call();
