@@ -14,7 +14,14 @@
 </script>
 
 {#if current}
-  <WorkspacePlaceholder library={current} onback={() => (current = undefined)} />
+  <!-- A new session means another library: mount again so no screen state carries over. -->
+  {#key current.session}
+    <WorkspacePlaceholder
+      library={current}
+      onswitch={(library) => (current = library)}
+      onshowall={() => (current = undefined)}
+    />
+  {/key}
 {:else}
   <LibrariesScreen onopen={(library) => (current = library)} />
 {/if}

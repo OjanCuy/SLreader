@@ -23,6 +23,8 @@ export interface LibrarySummary {
   /** UTC, ISO 8601. */
   lastOpenedAt: string | null;
   problem: LibraryProblem | null;
+  /** Set only on the result of opening a library; data commands will require it. */
+  session: number | null;
 }
 
 /** The commands below reject with this shape. */
@@ -34,6 +36,7 @@ export interface LibraryError {
     | "already_exists"
     | "invalid_name"
     | "not_registered"
+    | "not_active"
     | "other";
   /** Technical detail. Do not show it to the user. */
   detail: string;

@@ -7,6 +7,11 @@
         icon?: IconName;
         /** Shown on the right, e.g. "Ctrl+U". The screen registers the actual key. */
         shortcut?: string;
+        /** Explains the item on a second line, e.g. why it is disabled. */
+        hint?: string;
+        hintIcon?: IconName;
+        /** Set (true or false) when the item is one of a set of choices; true shows a check. */
+        checked?: boolean;
         disabled?: boolean;
         onselect: () => void;
       }
@@ -28,6 +33,8 @@
     /** Which edge of the trigger the menu lines up with. */
     align?: "start" | "end";
     disabled?: boolean;
+    /** Called each time the menu opens, e.g. to reload its items. */
+    onopen?: () => void;
   }
 
   let {
@@ -37,6 +44,7 @@
     iconOnly = false,
     align = "start",
     disabled = false,
+    onopen,
   }: Props = $props();
 
   const id = $props.id();
@@ -48,10 +56,11 @@
   const trigger = () => root.querySelector<HTMLButtonElement>("button")!;
 
   const enabledItems = () =>
-    Array.from(list?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []);
+    Array.from(list?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
 
   async function show(focus: "first" | "last") {
     open = true;
+    onopen?.();
     await tick();
     const all = enabledItems();
     (focus === "first" ? all[0] : all.at(-1))?.focus();
@@ -136,7 +145,8 @@
         {:else}
           <button
             type="button"
-            role="menuitem"
+            role={item.checked === undefined ? "menuitem" : "menuitemradio"}
+            aria-checked={item.checked}
             tabindex="-1"
             disabled={item.disabled}
             onclick={() => {
@@ -146,9 +156,21 @@
             }}
           >
             <span class="icon">
-              {#if item.icon}<Icon name={item.icon} />{/if}
+              {#if item.checked}
+                <Icon name="check" />
+              {:else if item.icon}
+                <Icon name={item.icon} />
+              {/if}
             </span>
-            <span class="label">{item.label}</span>
+            <span class="label">
+              <span class="text" title={item.label}>{item.label}</span>
+              {#if item.hint}
+                <span class="hint">
+                  {#if item.hintIcon}<Icon name={item.hintIcon} size={12} />{/if}
+                  {item.hint}
+                </span>
+              {/if}
+            </span>
             {#if item.shortcut}<kbd>{item.shortcut}</kbd>{/if}
           </button>
         {/if}
@@ -168,6 +190,9 @@
     top: calc(100% + var(--space-1));
     z-index: 10;
     min-width: 200px;
+    max-width: min(360px, 90vw);
+    max-height: 60vh;
+    overflow-y: auto;
     padding: var(--space-1);
     border: var(--border-float);
     border-radius: var(--radius-md);
@@ -183,7 +208,7 @@
     right: 0;
   }
 
-  [role="menuitem"] {
+  .list button {
     display: flex;
     align-items: center;
     gap: var(--space-2);
@@ -198,20 +223,20 @@
     cursor: pointer;
   }
 
-  [role="menuitem"]:hover,
-  [role="menuitem"]:focus-visible {
+  .list button:hover,
+  .list button:focus-visible {
     background: color-mix(in srgb, var(--text-primary) 8%, transparent);
   }
 
-  [role="menuitem"]:active {
+  .list button:active {
     background: color-mix(in srgb, var(--text-primary) 16%, transparent);
   }
 
-  [role="menuitem"]:focus-visible {
+  .list button:focus-visible {
     outline-offset: calc(-1 * var(--focus-ring-width));
   }
 
-  [role="menuitem"]:disabled {
+  .list button:disabled {
     opacity: 0.5;
     cursor: default;
     pointer-events: none;
@@ -223,7 +248,24 @@
   }
 
   .label {
+    display: flex;
     flex: 1;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .hint {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    color: var(--text-secondary);
+    font: var(--type-caption);
+    white-space: normal;
   }
 
   kbd {

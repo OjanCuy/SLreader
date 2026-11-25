@@ -17,6 +17,7 @@ const library = (over: Partial<LibrarySummary> = {}): LibrarySummary => ({
   paperCount: 12,
   lastOpenedAt: "2026-11-25T10:00:00.000Z",
   problem: null,
+  session: null,
   ...over,
 });
 

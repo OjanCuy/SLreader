@@ -3,9 +3,14 @@
 //!
 //! The app database only remembers folders (`library_registry`). Everything shown
 //! about a library is read from the library folder itself.
+//!
+//! Isolation (FR-14.4): papers, summaries, exports, `[#n]` links, and AI features must
+//! get their connection from `library_for_reading` or `library_for_writing`, never
+//! from `ActiveLibrary` directly.
 //! Nothing here ever deletes a library folder or anything in it.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
@@ -19,8 +24,13 @@ pub const PDF_FOLDER: &str = "pdfs";
 /// The one library that is currently open (FR-14.2).
 pub struct ActiveLibrary {
     pub id: i64,
+    /// New for every opening. A request carrying an older number is refused, so a
+    /// screen left over from another library can never read or change this one.
+    pub session: u64,
     pub library: OpenedLibrary,
 }
+
+static NEXT_SESSION: AtomicU64 = AtomicU64::new(1);
 
 /// One entry of the libraries list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -33,6 +43,8 @@ pub struct LibrarySummary {
     pub paper_count: Option<i64>,
     pub last_opened_at: Option<String>,
     pub problem: Option<LibraryProblem>,
+    /// Set only on the result of opening a library; needed to work with its data.
+    pub session: Option<u64>,
 }
 
 /// What went wrong, as a code the UI can act on. The UI has its own fixed texts.
@@ -47,6 +59,8 @@ pub enum ErrorCode {
     InvalidName,
     /// The id is not in the list.
     NotRegistered,
+    /// The request was for a library that is no longer the open one.
+    NotActive,
     /// Anything else: disk full, no permission, file locked, ...
     Other,
 }
@@ -120,7 +134,15 @@ fn summarize(
         Err(e) => (None, None, e.library_problem()),
     };
     set_missing(app, id, problem == Some(LibraryProblem::NotFound))?;
-    Ok(LibrarySummary { id, folder_path, name, paper_count, last_opened_at, problem })
+    Ok(LibrarySummary {
+        id,
+        folder_path,
+        name,
+        paper_count,
+        last_opened_at,
+        problem,
+        session: None,
+    })
 }
 
 /// Creates a new library in `folder`, registers it, and makes it active (FR-14.1, FR-01.1).
@@ -256,13 +278,37 @@ fn activate(
          WHERE id = ?1",
         [id],
     )?;
-    *active = Some(ActiveLibrary { id, library });
+    let session = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
+    *active = Some(ActiveLibrary { id, session, library });
     let (folder_path, last_opened_at): (String, Option<String>) = app.query_row(
         "SELECT folder_path, last_opened_at FROM library_registry WHERE id = ?1",
         [id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    summarize(app, id, folder_path, last_opened_at)
+    let summary = summarize(app, id, folder_path, last_opened_at)?;
+    Ok(LibrarySummary { session: Some(session), ..summary })
+}
+
+/// The open library's database, for reading. `session` is the number the caller got
+/// when it opened the library.
+pub fn library_for_reading(active: &Option<ActiveLibrary>, session: u64) -> Result<&Connection> {
+    Ok(&current(active, session)?.library.conn)
+}
+
+/// Like `library_for_reading`, but refuses a read-only library.
+pub fn library_for_writing(active: &Option<ActiveLibrary>, session: u64) -> Result<&Connection> {
+    let current = current(active, session)?;
+    if current.library.read_only.is_some() {
+        return Err(LibraryError::new(ErrorCode::NewerVersion, "the library is read-only"));
+    }
+    Ok(&current.library.conn)
+}
+
+fn current(active: &Option<ActiveLibrary>, session: u64) -> Result<&ActiveLibrary> {
+    active
+        .as_ref()
+        .filter(|current| current.session == session)
+        .ok_or_else(|| LibraryError::new(ErrorCode::NotActive, "this library is no longer open"))
 }
 
 /// Makes the path absolute with consistent separators, so one folder is listed once.
@@ -395,7 +441,8 @@ mod tests {
         assert_eq!(summary.problem, None);
         assert!(summary.last_opened_at.is_some());
         assert_eq!(s.active_id(), Some(summary.id));
-        assert_eq!(s.list(), [summary]);
+        // The list is the same entry, without the session number.
+        assert_eq!(s.list(), [LibrarySummary { session: None, ..summary }]);
     }
 
     #[test]
@@ -667,12 +714,99 @@ mod tests {
         assert_eq!(error.code, ErrorCode::NotRegistered);
     }
 
+    // ---- T-10: data is isolated per active library (FR-14.4) ----
+
+    fn titles(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn.prepare("SELECT title FROM paper ORDER BY title").unwrap();
+        stmt.query_map([], |r| r.get(0)).unwrap().map(std::result::Result::unwrap).collect()
+    }
+
+    fn add(s: &Setup, session: u64, title: &str) {
+        let conn = library_for_writing(&s.active, session).unwrap();
+        conn.execute("INSERT INTO paper (title) VALUES (?1)", [title]).unwrap();
+        conn.execute(
+            "INSERT INTO exclusion_reason (code, label, sort_order) VALUES (?1, 'x', 0)",
+            [title],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn each_library_shows_only_its_own_data() {
+        let mut s = setup();
+        let (a, b) = (s.folder("a"), s.folder("b"));
+        let first = s.create(&a, "A").unwrap();
+        add(&s, first.session.unwrap(), "from A");
+        let second = s.create(&b, "B").unwrap();
+        add(&s, second.session.unwrap(), "from B");
+
+        let b_conn = library_for_reading(&s.active, second.session.unwrap()).unwrap();
+        assert_eq!(titles(b_conn), ["from B"]);
+
+        let again = open(&s.app, &mut s.active, first.id).unwrap();
+        let a_conn = library_for_reading(&s.active, again.session.unwrap()).unwrap();
+        assert_eq!(titles(a_conn), ["from A"]);
+        let reasons: i64 = a_conn
+            .query_row("SELECT count(*) FROM exclusion_reason", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(reasons, 1);
+    }
+
+    #[test]
+    fn an_old_session_cannot_touch_the_library_that_replaced_it() {
+        let mut s = setup();
+        let (a, b) = (s.folder("a"), s.folder("b"));
+        let first = s.create(&a, "A").unwrap();
+        let old = first.session.unwrap();
+        let second = s.create(&b, "B").unwrap();
+        assert_ne!(second.session.unwrap(), old);
+
+        let refused = |s: &Setup| {
+            let read = library_for_reading(&s.active, old).err().unwrap().code;
+            let write = library_for_writing(&s.active, old).err().unwrap().code;
+            (read, write) == (ErrorCode::NotActive, ErrorCode::NotActive)
+        };
+        assert!(refused(&s));
+        // Even reopening the first library does not revive the old number.
+        open(&s.app, &mut s.active, first.id).unwrap();
+        assert!(refused(&s));
+        // Nor does having no library open.
+        s.active = None;
+        assert!(refused(&s));
+    }
+
+    #[test]
+    fn a_failed_switch_keeps_the_current_session_working() {
+        let mut s = setup();
+        let (a, b) = (s.folder("a"), s.folder("b"));
+        let a_id = s.create(&a, "A").unwrap().id;
+        let session = s.create(&b, "B").unwrap().session.unwrap();
+        std::fs::rename(&a, format!("{a}-moved")).unwrap();
+
+        assert!(open(&s.app, &mut s.active, a_id).is_err());
+        assert!(library_for_writing(&s.active, session).is_ok());
+    }
+
+    #[test]
+    fn a_read_only_library_can_be_read_but_not_written() {
+        let mut s = setup();
+        let folder = s.folder("a");
+        let id = s.create(&folder, "A").unwrap().id;
+        s.active = None;
+        make_newer(&folder);
+
+        let session = open(&s.app, &mut s.active, id).unwrap().session.unwrap();
+        assert!(library_for_reading(&s.active, session).is_ok());
+        let error = library_for_writing(&s.active, session).err().unwrap();
+        assert_eq!(error.code, ErrorCode::NewerVersion);
+    }
+
     #[test]
     fn the_ui_receives_the_field_names_and_codes_it_expects() {
         let mut s = setup();
         let folder = s.folder("a");
         let json = serde_json::to_value(s.create(&folder, "A").unwrap()).unwrap();
-        for field in ["id", "folderPath", "name", "paperCount", "lastOpenedAt", "problem"] {
+        for field in ["id", "folderPath", "name", "paperCount", "lastOpenedAt", "problem", "session"] {
             assert!(json.get(field).is_some(), "{field} is missing");
         }
         let error = serde_json::to_value(s.create(&folder, "B").unwrap_err()).unwrap();
