@@ -54,11 +54,21 @@
   --hl-method-swatch: light-dark(#0b7f9c, #4fc9e6);
   --hl-result-swatch: light-dark(#946c00, #e3b53a);
 
-  /* Search results on the PDF page. One value for both themes: the page is white. The
+  /* PDF page modes (FR-02.2), chosen in the reader and independent of the app theme.
+     Dark inverts the drawing and turns the hues back, so charts keep their colors. */
+  --page-normal: #ffffff;
+  --page-dark: #1a1a1a;
+  --page-dark-filter: invert(0.9) hue-rotate(180deg);
+  --page-sepia: #f4ecd8;
+
+  /* Search results on the PDF page; the "dark" values are for the dark page mode. The
      current result also gets a border, so it does not differ by color only. */
   --search-match-fill: rgb(251 146 60 / 32%);
   --search-active-fill: rgb(251 146 60 / 55%);
   --search-active-border: #9a3f06;
+  --search-dark-match-fill: rgb(251 146 60 / 22%);
+  --search-dark-active-fill: rgb(251 146 60 / 38%);
+  --search-dark-active-border: #fdba74;
 
   /* Typography: use as `font: var(--type-body);` */
   --font-ui: "Inter Variable", "Segoe UI", system-ui, sans-serif;

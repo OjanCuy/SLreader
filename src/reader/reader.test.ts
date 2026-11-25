@@ -272,3 +272,114 @@ describe("search in the PDF (FR-02.1)", () => {
     await shows("1/3");
   });
 });
+
+describe("page mode (FR-02.2)", () => {
+  const radio = (name: string) => screen.getByRole("radio", { name }) as HTMLInputElement;
+
+  it("offers Normal, Dark, and Sepia, and starts with the stored one", async () => {
+    mocked.getPageMode.mockResolvedValue("sepia");
+    const { container } = show();
+    await screen.findByText("/ 3");
+    expect(screen.getByRole("group", { name: "Page mode" })).toBeTruthy();
+    await vi.waitFor(() => expect(radio("Sepia").checked).toBe(true));
+    expect(container.querySelector(".slot.sepia .page.sepia")).toBeTruthy();
+  });
+
+  it("changes the pages and saves the choice, also for the next paper", async () => {
+    mocked.getPageMode.mockResolvedValue("normal");
+    mocked.setPageMode.mockResolvedValue();
+    const { container, rerender } = show();
+    await screen.findByText("/ 3");
+    await fireEvent.click(radio("Dark"));
+    expect(mocked.setPageMode).toHaveBeenCalledExactlyOnceWith("dark");
+    expect(container.querySelector(".page.dark")).toBeTruthy();
+
+    await rerender({ paperId: "p2" });
+    await screen.findByText("/ 3");
+    expect(radio("Dark").checked).toBe(true);
+  });
+});
+
+describe("last page read (FR-02.3)", () => {
+  // jsdom has no layout: give elements a size and a scroll position that can be set.
+  const scrolled = new WeakMap<Element, number>();
+
+  beforeEach(() => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(850);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
+    Object.defineProperty(HTMLElement.prototype, "scrollTop", {
+      configurable: true,
+      get() {
+        return scrolled.get(this) ?? 0;
+      },
+      set(value: number) {
+        scrolled.set(this, value);
+      },
+    });
+    openPdf.mockImplementation(async () => fakePdf(10));
+    mocked.saveLastPage.mockResolvedValue();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete (HTMLElement.prototype as { scrollTop?: number }).scrollTop;
+  });
+
+  const field = () => screen.getByLabelText("Page") as HTMLInputElement;
+
+  async function goTo(page: number) {
+    await fireEvent.focus(field());
+    await fireEvent.input(field(), { target: { value: String(page) } });
+    await fireEvent.blur(field());
+  }
+
+  async function openAt(page: number, readOnly = false) {
+    mocked.getLastPage.mockResolvedValue(page);
+    const view = show({ readOnly });
+    await screen.findByText("/ 10");
+    // The view moves to its start page just after "Fit width" has sized the pages.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return view;
+  }
+
+  it("opens the paper at its stored page without saving it again", async () => {
+    const view = await openAt(6);
+    expect(mocked.getLastPage).toHaveBeenCalledWith(7, "p1");
+    await vi.waitFor(() => expect(field().value).toBe("6"));
+    view.unmount();
+    expect(mocked.saveLastPage).not.toHaveBeenCalled();
+  });
+
+  it("saves the page the user moved to", async () => {
+    await openAt(1);
+    await goTo(4);
+    await vi.waitFor(() => expect(mocked.saveLastPage).toHaveBeenCalledExactlyOnceWith(7, "p1", 4));
+  });
+
+  it("saves at once, for the right paper, when another paper is opened", async () => {
+    const view = await openAt(1);
+    await goTo(8);
+    await view.rerender({ paperId: "p2" });
+    expect(mocked.saveLastPage).toHaveBeenCalledExactlyOnceWith(7, "p1", 8);
+  });
+
+  it("saves nothing in a read-only library", async () => {
+    const view = await openAt(3, true);
+    await vi.waitFor(() => expect(field().value).toBe("3"));
+    await goTo(5);
+    view.unmount();
+    expect(mocked.saveLastPage).not.toHaveBeenCalled();
+  });
+
+  it("shows the last page when the stored one is past the end", async () => {
+    await openAt(99);
+    await vi.waitFor(() => expect(field().value).toBe("10"));
+  });
+
+  it("starts at page 1 when the stored page cannot be read", async () => {
+    mocked.getLastPage.mockRejectedValue(new Error("busy"));
+    show();
+    await screen.findByText("/ 10");
+    expect(field().value).toBe("1");
+  });
+});

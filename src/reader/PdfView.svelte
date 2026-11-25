@@ -3,10 +3,12 @@
   Every page has a placeholder of its exact size, so the scrollbar is right from the
   start; only the pages near the view are drawn (FR-02.4).
   Search covers every page, also the ones not drawn (FR-02.1); Ctrl+F opens it.
-  Mounted once per opened PDF, so zoom, position, and search start fresh for each paper.
+  Mounted once per opened PDF, so zoom and search start fresh for each paper; the
+  view starts at `startPage` and reports the pages read after that (FR-02.3).
 -->
 <script lang="ts">
   import { tick, untrack } from "svelte";
+  import type { PageMode } from "../lib/api";
   import SearchField from "../lib/components/SearchField.svelte";
   import {
     clampZoom,
@@ -35,7 +37,16 @@
     type PageIndex,
   } from "./search";
 
-  let { pdf }: { pdf: OpenedPdf } = $props();
+  interface Props {
+    pdf: OpenedPdf;
+    /** 1-based; a page past the end means the last one. */
+    startPage?: number;
+    onpagechange?: (page: number) => void;
+    mode?: PageMode;
+    onmode?: (mode: PageMode) => void;
+  }
+
+  let { pdf, startPage = 1, onpagechange, mode = "normal", onmode }: Props = $props();
 
   let zoom = $state(1);
   /** "Fit width" stays on until the user zooms: it follows the window size (Brief Section 9). */
@@ -53,8 +64,30 @@
   $effect(() => {
     if (fitWidth && viewWidth > 0) {
       const fitted = fitWidthZoom(pdf.sizes, viewWidth);
-      untrack(() => setZoom(fitted));
+      untrack(() => setZoom(fitted).then(showStartPage));
     }
+  });
+
+  /** The page last reported, or null until the view is at its start page. */
+  let known = $state<number | null>(null);
+
+  /** Once, as soon as the pages have their real size. */
+  function showStartPage() {
+    if (known !== null || !scroller) return;
+    goToPage(Math.min(Math.max(1, startPage), pdf.sizes.length));
+    // What is shown now is not new reading: near the end, the last page may not
+    // reach the top, and the stored page must not move back because of that.
+    known = page;
+  }
+
+  $effect(() => {
+    const now = page;
+    const settled = zooming === 0;
+    untrack(() => {
+      if (!settled || known === null || now === known) return;
+      known = now;
+      onpagechange?.(now);
+    });
   });
 
   /** Changes the zoom and keeps the same spot of the same page at the top of the view. */
@@ -62,12 +95,17 @@
     next = clampZoom(next);
     if (Math.abs(next - zoom) < 1e-4) return;
     const position = positionAt(layout, scroller.scrollTop);
+    zooming++;
     zoom = next;
     // Wait until the column has its new height, or the scroll position gets cut off.
     await tick();
     scroller.scrollTop = scrollTopFor(layout, position);
     scrollTop = scroller.scrollTop;
+    zooming--;
   }
+
+  /** Zoom changes still under way: until then, `page` may name a page not being read. */
+  let zooming = $state(0);
 
   function zoomBy(change: (zoom: number) => number) {
     fitWidth = false;
@@ -169,6 +207,8 @@
     onzoomin={() => zoomBy(zoomIn)}
     onfitwidth={() => (fitWidth = true)}
     ongotopage={goToPage}
+    {mode}
+    {onmode}
   >
     {#snippet search()}
       <SearchField
@@ -197,7 +237,7 @@
     <div class="column" style:height="{layout.height}px" style:min-width="{layout.width}px">
       {#each layout.pages as box, slot (slot)}
         <div
-          class="slot"
+          class="slot {mode}"
           style:top="{box.top}px"
           style:width="{box.width}px"
           style:height="{box.height}px"
@@ -208,6 +248,7 @@
               doc={pdf.doc}
               number={slot + 1}
               {zoom}
+              {mode}
               matches={matchesByPage.get(slot)}
               active={active?.page === slot ? active : null}
               reveal={active?.page === slot ? reveal : 0}
@@ -245,6 +286,15 @@
     position: absolute;
     left: 50%;
     outline: 1px solid var(--border-subtle);
-    background: var(--surface-panel);
+    background: var(--page-normal);
+  }
+
+  /* The color of a page that is not drawn yet. */
+  .slot.dark {
+    background: var(--page-dark);
+  }
+
+  .slot.sepia {
+    background: var(--page-sepia);
   }
 </style>

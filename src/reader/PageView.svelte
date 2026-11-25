@@ -7,6 +7,7 @@
 <script lang="ts">
   import { TextLayer, type PDFDocumentProxy, type RenderTask } from "pdfjs-dist";
   import { untrack } from "svelte";
+  import type { PageMode } from "../lib/api";
   import { canvasPixelRatio, CSS_PER_POINT, type Box } from "./layout";
   import { isCancelled } from "./pdfjs";
   import { segments, type Match } from "./search";
@@ -16,6 +17,8 @@
     /** 1-based. */
     number: number;
     zoom: number;
+    /** Colors the drawn page only; the marks and the text layer stay on top. */
+    mode?: PageMode;
     /** The search results on this page. */
     matches?: Match[];
     /** The current search result, when it is on this page. */
@@ -26,7 +29,16 @@
     onactive?: (box: Box) => void;
   }
 
-  let { doc, number, zoom, matches = [], active = null, reveal = 0, onactive }: Props = $props();
+  let {
+    doc,
+    number,
+    zoom,
+    mode = "normal",
+    matches = [],
+    active = null,
+    reveal = 0,
+    onactive,
+  }: Props = $props();
 
   let pageElement: HTMLDivElement;
   let canvasHost: HTMLDivElement;
@@ -134,7 +146,7 @@
   }
 </script>
 
-<div class="page" bind:this={pageElement} style:--total-scale-factor={zoom * CSS_PER_POINT}>
+<div class="page {mode}" bind:this={pageElement} style:--total-scale-factor={zoom * CSS_PER_POINT}>
   <div class="canvas" bind:this={canvasHost}></div>
   <!-- Below the transparent text, so selecting text is not affected. -->
   <div class="marks" aria-hidden="true">
@@ -160,10 +172,28 @@
     inset: 0;
   }
 
+  .canvas {
+    position: absolute;
+    inset: 0;
+  }
+
   .canvas :global(canvas) {
     display: block;
     width: 100%;
     height: 100%;
+  }
+
+  /* Page modes (FR-02.2) change how the drawing looks, without drawing it again. */
+  .dark .canvas {
+    filter: var(--page-dark-filter);
+  }
+
+  .sepia .canvas::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--page-sepia);
+    mix-blend-mode: multiply;
   }
 
   .marks {
@@ -182,6 +212,17 @@
   .mark.active {
     background: var(--search-active-fill);
     outline: 2px solid var(--search-active-border);
+  }
+
+  /* On a dark page "multiply" would hide the marks (Brief Section 3). */
+  .dark .mark {
+    background: var(--search-dark-match-fill);
+    mix-blend-mode: normal;
+  }
+
+  .dark .mark.active {
+    background: var(--search-dark-active-fill);
+    outline-color: var(--search-dark-active-border);
   }
 
   /* The PDF.js text layer (from pdfjs-dist/web/pdf_viewer.css, reduced to what is

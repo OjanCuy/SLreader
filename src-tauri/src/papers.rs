@@ -486,6 +486,25 @@ fn set_aside(path: &Path) -> io::Result<Option<PathBuf>> {
     unreachable!("the loop only ends by returning")
 }
 
+/// The page (1-based) the paper was last read at (FR-02.3).
+pub fn last_page(conn: &Connection, paper_id: &str) -> Result<u32, LibraryError> {
+    conn.query_row("SELECT last_page FROM paper WHERE id = ?1", [paper_id], |r| r.get(0))
+        .optional()?
+        .ok_or_else(|| unknown_paper(paper_id))
+}
+
+/// Remembers the page being read (FR-02.3). Nothing else about the paper changes.
+pub fn save_last_page(conn: &Connection, paper_id: &str, page: u32) -> Result<(), LibraryError> {
+    let changed = conn.execute(
+        "UPDATE paper SET last_page = ?1 WHERE id = ?2",
+        params![page.max(1), paper_id],
+    )?;
+    if changed == 0 {
+        return Err(unknown_paper(paper_id));
+    }
+    Ok(())
+}
+
 /// All papers, oldest first. `still_extracting` tells whether a pending paper is
 /// still in the queue of the background extraction.
 pub fn list_papers(
@@ -1139,6 +1158,41 @@ mod tests {
         assert_eq!(delete_paper(&s.conn, &s.library, "no-such-id").unwrap_err().code, ErrorCode::Other);
         assert_eq!(s.papers(), 1);
         assert_eq!(s.files_in_pdfs(), ["a.pdf"]);
+    }
+
+    // ---- T-18: last page read ----
+
+    #[test]
+    fn remembers_the_last_page_of_each_paper() {
+        let s = setup();
+        s.import(&[s.pdf("a.pdf"), s.pdf("b.pdf")]);
+        let (a, b) = (s.id_of("pdfs/a.pdf"), s.id_of("pdfs/b.pdf"));
+        assert_eq!(last_page(&s.conn, &a).unwrap(), 1);
+
+        save_last_page(&s.conn, &a, 7).unwrap();
+        assert_eq!((last_page(&s.conn, &a).unwrap(), last_page(&s.conn, &b).unwrap()), (7, 1));
+        // A page below 1 does not exist.
+        save_last_page(&s.conn, &a, 0).unwrap();
+        assert_eq!(last_page(&s.conn, &a).unwrap(), 1);
+        assert_eq!(save_last_page(&s.conn, "no-such-id", 2).unwrap_err().code, ErrorCode::Other);
+        assert_eq!(last_page(&s.conn, "no-such-id").unwrap_err().code, ErrorCode::Other);
+    }
+
+    #[test]
+    fn saving_the_last_page_changes_nothing_else() {
+        // Rule 1: reading is not a decision.
+        let s = setup();
+        s.import(&[s.pdf("a.pdf")]);
+        let id = s.id_of("pdfs/a.pdf");
+        s.conn.execute("UPDATE paper SET decision = 'include', assessment_note = 'n'", []).unwrap();
+        save_last_page(&s.conn, &id, 3).unwrap();
+        let row: (String, String, String) = s
+            .conn
+            .query_row("SELECT decision, assessment_note, file_path FROM paper", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(row, ("include".into(), "n".into(), "pdfs/a.pdf".into()));
     }
 
     #[test]

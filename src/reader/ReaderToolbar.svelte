@@ -1,11 +1,13 @@
 <!--
   ReaderToolbar (Brief Section 6, S-02): zoom out / in, Fit width, the page field,
-  and search. Page mode joins it in T-18.
+  search, and the page mode.
 -->
 <script lang="ts">
   import type { Snippet } from "svelte";
   import Button from "../lib/components/Button.svelte";
   import IconButton from "../lib/components/IconButton.svelte";
+  import SegmentedControl from "../lib/components/SegmentedControl.svelte";
+  import type { PageMode } from "../lib/api";
   import { MAX_ZOOM, MIN_ZOOM, parsePage, zoomLabel } from "./layout";
 
   interface Props {
@@ -19,9 +21,28 @@
     ongotopage: (page: number) => void;
     /** The SearchField. */
     search: Snippet;
+    mode: PageMode;
+    onmode?: (mode: PageMode) => void;
   }
 
-  let { zoom, page, total, onzoomout, onzoomin, onfitwidth, ongotopage, search }: Props = $props();
+  let {
+    zoom,
+    page,
+    total,
+    onzoomout,
+    onzoomin,
+    onfitwidth,
+    ongotopage,
+    search,
+    mode,
+    onmode,
+  }: Props = $props();
+
+  const MODES = [
+    { value: "normal", label: "Normal" },
+    { value: "dark", label: "Dark" },
+    { value: "sepia", label: "Sepia" },
+  ] as const;
 
   const id = $props.id();
   let typed = $state("");
@@ -74,6 +95,7 @@
     <span class="total">/ {total}</span>
   </div>
   {@render search()}
+  <SegmentedControl label="Page mode" options={MODES} value={mode} onchange={onmode} />
 </div>
 
 <style>

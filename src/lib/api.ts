@@ -158,6 +158,27 @@ export function readPaperPdf(session: number, paperId: string): Promise<ArrayBuf
   return invoke("read_paper_pdf", { session, paperId });
 }
 
+/** The page (1-based) the paper was last read at (FR-02.3). */
+export function getLastPage(session: number, paperId: string): Promise<number> {
+  return invoke("get_last_page", { session, paperId });
+}
+
+/** Remembers the page being read. Rejects for a read-only library. */
+export function saveLastPage(session: number, paperId: string, page: number): Promise<void> {
+  return invoke("save_last_page", { session, paperId, page });
+}
+
+/** How PDF pages are shown (FR-02.2). One setting for the whole app. */
+export type PageMode = "normal" | "dark" | "sepia";
+
+export function getPageMode(): Promise<PageMode> {
+  return invoke("get_page_mode");
+}
+
+export function setPageMode(mode: PageMode): Promise<void> {
+  return invoke("set_page_mode", { mode });
+}
+
 /** Shows the system file picker for one PDF. Null when the user cancels. */
 export function pickPdf(): Promise<string | null> {
   return invoke("pick_pdf");

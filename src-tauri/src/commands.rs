@@ -10,6 +10,7 @@ use tauri_plugin_dialog::DialogExt;
 use crate::extraction::Extraction;
 use crate::libraries::{self, LibraryError, LibrarySummary};
 use crate::papers::{self, ImportOutcome, ImportReport, PaperListItem};
+use crate::settings::{self, PageMode};
 use crate::{AppDb, CurrentLibrary};
 
 /// A panic while holding a lock must not disable every later command.
@@ -214,6 +215,42 @@ pub fn delete_paper(
     let current = lock(&current.0);
     let (conn, folder) = libraries::library_and_folder_for_writing(&current, session)?;
     papers::delete_paper(conn, folder, &paper_id)
+}
+
+/// The page a paper was last read at (FR-02.3).
+#[tauri::command(async)]
+pub fn get_last_page(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paper_id: String,
+) -> Result<u32, LibraryError> {
+    let current = lock(&current.0);
+    let (conn, _) = libraries::library_and_folder_for_reading(&current, session)?;
+    papers::last_page(conn, &paper_id)
+}
+
+/// Remembers the page being read. Refused for a read-only library.
+#[tauri::command(async)]
+pub fn save_last_page(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paper_id: String,
+    page: u32,
+) -> Result<(), LibraryError> {
+    let current = lock(&current.0);
+    let (conn, _) = libraries::library_and_folder_for_writing(&current, session)?;
+    papers::save_last_page(conn, &paper_id, page)
+}
+
+/// The page mode, an app setting shared by all libraries (FR-02.2).
+#[tauri::command(async)]
+pub fn get_page_mode(app: State<'_, AppDb>) -> Result<PageMode, LibraryError> {
+    Ok(settings::page_mode(&lock(&app.0))?)
+}
+
+#[tauri::command(async)]
+pub fn set_page_mode(app: State<'_, AppDb>, mode: PageMode) -> Result<(), LibraryError> {
+    Ok(settings::set_page_mode(&lock(&app.0), mode)?)
 }
 
 #[tauri::command(async)]

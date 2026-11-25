@@ -1,11 +1,23 @@
 <!--
-  S-02 Reader (FR-02.1): opens the selected paper's PDF.
+  S-02 Reader (FR-02.1): opens the selected paper's PDF at the page it was last read
+  at (FR-02.3), and keeps the page mode (FR-02.2).
   States from Brief Section 7: "Select a paper from the list.", "Loading PDF…",
   "PDF file is missing." + "Attach PDF", "This PDF can't be opened.".
   Password-protected PDFs get their own prompt in T-19; until then they cannot be opened.
 -->
 <script lang="ts">
-  import { attachPdf, pickPdf, readPaperPdf, type LibraryError } from "../lib/api";
+  import { onMount } from "svelte";
+  import {
+    attachPdf,
+    getLastPage,
+    getPageMode,
+    pickPdf,
+    readPaperPdf,
+    saveLastPage,
+    setPageMode,
+    type LibraryError,
+    type PageMode,
+  } from "../lib/api";
   import Button from "../lib/components/Button.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Icon from "../lib/components/Icon.svelte";
@@ -13,6 +25,7 @@
   import { showToast } from "../lib/components/toasts.svelte";
   import { attachMessage } from "../lib/importTexts";
   import { libraryErrorMessage } from "../lib/libraryTexts";
+  import { createPageSaver, type PageSaver } from "./pageSaver";
   import PdfView from "./PdfView.svelte";
   import { openPdf, type OpenedPdf } from "./pdfjs";
 
@@ -20,7 +33,7 @@
     session: number;
     /** The selected paper, or null. */
     paperId: string | null;
-    /** No "Attach PDF" in a read-only library. */
+    /** No "Attach PDF" in a read-only library, and no saved reading position. */
     readOnly: boolean;
     /** A file was attached: the paper list should refresh. */
     onattached: () => void;
@@ -33,12 +46,40 @@
     | { kind: "loading" }
     | { kind: "missing" }
     | { kind: "broken" }
-    | { kind: "ready"; pdf: OpenedPdf };
+    | { kind: "ready"; pdf: OpenedPdf; startPage: number; saver: PageSaver };
 
   let view = $state<View>({ kind: "empty" });
   /** Bumped to open the same paper again, e.g. after "Attach PDF". */
   let reload = $state(0);
   let attaching = $state(false);
+
+  let mode = $state<PageMode>("normal");
+  /** The user's choice wins over a stored mode that arrives late. */
+  let modeChosen = false;
+
+  onMount(async () => {
+    try {
+      const stored = await getPageMode();
+      if (!modeChosen && stored) mode = stored;
+    } catch (failure) {
+      console.error("The page mode could not be read", failure);
+    }
+  });
+
+  function chooseMode(next: PageMode) {
+    modeChosen = true;
+    mode = next;
+    setPageMode(next)?.catch((failure) => console.error("The page mode was not saved", failure));
+  }
+
+  /** The first page is a fine place to start when the stored one cannot be read. */
+  async function lastPage(id: string): Promise<number> {
+    try {
+      return (await getLastPage(session, id)) ?? 1;
+    } catch {
+      return 1;
+    }
+  }
 
   $effect(() => {
     const id = paperId;
@@ -50,14 +91,20 @@
     view = { kind: "loading" };
     let stopped = false;
     let opened: OpenedPdf | undefined;
+    // Bound to this paper, so a late save never goes to another one.
+    const ofSession = session;
+    const writable = !readOnly;
+    const saver = createPageSaver(async (page) => {
+      if (writable) await saveLastPage(ofSession, id, page);
+    });
 
     (async () => {
       try {
-        const bytes = await readPaperPdf(session, id);
+        const [bytes, startPage] = await Promise.all([readPaperPdf(session, id), lastPage(id)]);
         if (stopped) return;
         opened = await openPdf(bytes);
         if (stopped) return opened.close();
-        view = { kind: "ready", pdf: opened };
+        view = { kind: "ready", pdf: opened, startPage, saver };
       } catch (failure) {
         if (stopped) return;
         view = isMissing(failure) ? { kind: "missing" } : { kind: "broken" };
@@ -66,6 +113,7 @@
 
     return () => {
       stopped = true;
+      saver.flush();
       opened?.close();
     };
   });
@@ -98,7 +146,13 @@
 <section class="reader">
   {#if view.kind === "ready"}
     {#key view.pdf}
-      <PdfView pdf={view.pdf} />
+      <PdfView
+        pdf={view.pdf}
+        startPage={view.startPage}
+        onpagechange={view.saver.change}
+        {mode}
+        onmode={chooseMode}
+      />
     {/key}
   {:else if view.kind === "loading"}
     <p class="state" role="status"><Spinner />Loading PDF…</p>

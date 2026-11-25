@@ -3,6 +3,7 @@ pub mod db;
 pub mod extraction;
 pub mod libraries;
 pub mod papers;
+pub mod settings;
 pub mod sync;
 pub mod text;
 
@@ -79,6 +80,10 @@ pub fn run() {
             commands::read_paper_pdf,
             commands::attach_pdf,
             commands::delete_paper,
+            commands::get_last_page,
+            commands::save_last_page,
+            commands::get_page_mode,
+            commands::set_page_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
