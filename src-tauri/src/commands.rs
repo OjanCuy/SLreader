@@ -8,6 +8,7 @@ use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::libraries::{self, LibraryError, LibrarySummary};
+use crate::papers::{self, ImportReport, PaperListItem};
 use crate::{AppDb, CurrentLibrary};
 
 /// A panic while holding a lock must not disable every later command.
@@ -101,4 +102,42 @@ pub fn pick_folder(app: AppHandle, window: WebviewWindow) -> Option<String> {
 #[tauri::command(async)]
 pub fn is_cloud_folder(folder_path: String) -> bool {
     crate::sync::is_cloud_folder(std::path::Path::new(&folder_path))
+}
+
+/// Shows the system file picker for PDFs. Empty when the user cancels.
+#[tauri::command(async)]
+pub fn pick_pdfs(app: AppHandle, window: WebviewWindow) -> Vec<String> {
+    app.dialog()
+        .file()
+        .set_parent(&window)
+        .add_filter("PDF", &["pdf"])
+        .blocking_pick_files()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|file| file.into_path().ok())
+        .filter_map(|path| path.to_str().map(String::from))
+        .collect()
+}
+
+/// Copies PDFs into the open library (FR-01.2 to FR-01.5).
+#[tauri::command(async)]
+pub fn import_pdfs(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paths: Vec<String>,
+) -> Result<ImportReport, LibraryError> {
+    let current = lock(&current.0);
+    let (conn, folder) = libraries::library_and_folder_for_writing(&current, session)?;
+    let paths: Vec<std::path::PathBuf> = paths.into_iter().map(Into::into).collect();
+    papers::import_pdfs(conn, folder, &paths)
+}
+
+#[tauri::command(async)]
+pub fn list_papers(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+) -> Result<Vec<PaperListItem>, LibraryError> {
+    let current = lock(&current.0);
+    let (conn, folder) = libraries::library_and_folder_for_reading(&current, session)?;
+    papers::list_papers(conn, folder)
 }

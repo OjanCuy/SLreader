@@ -1,6 +1,7 @@
 // The only place the UI talks to the Rust core.
 // Every Tauri command gets a typed wrapper here, so components never call `invoke` directly.
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { LibraryProblem } from "./libraryProblems";
 
 export interface AppInfo {
@@ -84,4 +85,57 @@ export function pickFolder(): Promise<string | null> {
 /** Whether to warn that a chosen folder is synced to the cloud. */
 export function isCloudFolder(folderPath: string): Promise<boolean> {
   return invoke("is_cloud_folder", { folderPath });
+}
+
+// ---- Papers (FR-01.2 to FR-01.5). Types mirror src-tauri/src/papers.rs. ----
+
+export type ImportOutcome =
+  | "added"
+  | "attached"
+  | "already_in_library"
+  | "not_pdf"
+  | "over_limit"
+  | "write_failed";
+
+export interface ImportReport {
+  files: { fileName: string; outcome: ImportOutcome }[];
+  /** Files that are now in the library, attached ones included. */
+  added: number;
+}
+
+export interface PaperListItem {
+  id: string;
+  /** Null for a paper restored from a backup that never had a file name. */
+  fileName: string | null;
+  title: string;
+  fileMissing: boolean;
+}
+
+/** Shows the system file picker for PDFs. Empty when the user cancels. */
+export function pickPdfs(): Promise<string[]> {
+  return invoke("pick_pdfs");
+}
+
+export function importPdfs(session: number, paths: string[]): Promise<ImportReport> {
+  return invoke("import_pdfs", { session, paths });
+}
+
+export function listPapers(session: number): Promise<PaperListItem[]> {
+  return invoke("list_papers", { session });
+}
+
+export type FileDrag =
+  | { type: "enter"; paths: string[] }
+  | { type: "drop"; paths: string[] }
+  | { type: "leave" };
+
+/** Files dragged over the window, with their paths. Returns a function that stops listening. */
+export function onFileDrag(handler: (event: FileDrag) => void): Promise<() => void> {
+  return getCurrentWebview().onDragDropEvent(({ payload }) => {
+    if (payload.type === "enter" || payload.type === "drop") {
+      handler({ type: payload.type, paths: payload.paths });
+    } else if (payload.type === "leave") {
+      handler({ type: "leave" });
+    }
+  });
 }

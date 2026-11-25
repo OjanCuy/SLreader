@@ -27,6 +27,7 @@ pub struct ActiveLibrary {
     /// New for every opening. A request carrying an older number is refused, so a
     /// screen left over from another library can never read or change this one.
     pub session: u64,
+    pub folder: PathBuf,
     pub library: OpenedLibrary,
 }
 
@@ -284,13 +285,14 @@ fn activate(
          WHERE id = ?1",
         [id],
     )?;
-    let session = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
-    *active = Some(ActiveLibrary { id, session, library });
     let (folder_path, last_opened_at): (String, Option<String>) = app.query_row(
         "SELECT folder_path, last_opened_at FROM library_registry WHERE id = ?1",
         [id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
+    let session = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
+    let folder = PathBuf::from(&folder_path);
+    *active = Some(ActiveLibrary { id, session, folder, library });
     let summary = summarize(app, id, folder_path, last_opened_at)?;
     Ok(LibrarySummary { session: Some(session), ..summary })
 }
@@ -303,11 +305,33 @@ pub fn library_for_reading(active: &Option<ActiveLibrary>, session: u64) -> Resu
 
 /// Like `library_for_reading`, but refuses a read-only library.
 pub fn library_for_writing(active: &Option<ActiveLibrary>, session: u64) -> Result<&Connection> {
+    Ok(&writable(active, session)?.library.conn)
+}
+
+/// The open library's database and folder, for changes that also touch files.
+pub fn library_and_folder_for_writing(
+    active: &Option<ActiveLibrary>,
+    session: u64,
+) -> Result<(&Connection, &Path)> {
+    let current = writable(active, session)?;
+    Ok((&current.library.conn, &current.folder))
+}
+
+/// The open library's database and folder, for reading.
+pub fn library_and_folder_for_reading(
+    active: &Option<ActiveLibrary>,
+    session: u64,
+) -> Result<(&Connection, &Path)> {
+    let current = current(active, session)?;
+    Ok((&current.library.conn, &current.folder))
+}
+
+fn writable(active: &Option<ActiveLibrary>, session: u64) -> Result<&ActiveLibrary> {
     let current = current(active, session)?;
     if let Some(problem) = current.library.read_only {
         return Err(read_only_error(problem));
     }
-    Ok(&current.library.conn)
+    Ok(current)
 }
 
 fn read_only_error(problem: LibraryProblem) -> LibraryError {

@@ -42,6 +42,11 @@ beforeEach(() => {
     ...(id === 1 ? alpha : beta),
     session: id,
   }));
+  // Each library has its own paper; the session tells them apart.
+  mocked.listPapers.mockImplementation(async (session) => [
+    { id: `p${session}`, fileName: `paper-${session}.pdf`, title: "", fileMissing: false },
+  ]);
+  mocked.onFileDrag.mockResolvedValue(() => {});
 });
 
 afterEach(() => {
@@ -82,14 +87,15 @@ describe("LibrarySwitcher", () => {
 
   it("switches to another library and shows only its details", async () => {
     await openAlpha();
-    expect(screen.getByText("1 paper")).toBeTruthy();
+    expect(await screen.findByText("paper-1.pdf")).toBeTruthy();
 
     const menu = await openSwitcher("Alpha");
     await fireEvent.click(await menu.findByRole("menuitemradio", { name: "Beta" }));
 
     await vi.waitFor(() => expect(heading()).toBe("Beta"));
-    expect(screen.getByText("2 papers")).toBeTruthy();
-    expect(screen.queryByText("1 paper")).toBeNull();
+    expect(await screen.findByText("paper-2.pdf")).toBeTruthy();
+    expect(screen.queryByText("paper-1.pdf")).toBeNull();
+    expect(mocked.listPapers).toHaveBeenLastCalledWith(2);
     expect(mocked.openLibrary).toHaveBeenLastCalledWith(2);
   });
 

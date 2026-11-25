@@ -1,0 +1,510 @@
+//! Papers in the open library: importing PDFs (FR-01.2 to FR-01.5) and listing them.
+//!
+//! Every function here receives the connection and folder of the open library from
+//! `libraries::library_and_folder_for_*`, so it can only touch that library (FR-14.4).
+//!
+//! Files are copied into `<library>/pdfs/` and never overwrite anything there.
+
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+
+use rusqlite::{Connection, params};
+use serde::Serialize;
+
+use crate::db::library::MAX_PAPERS;
+use crate::libraries::{LibraryError, PDF_FOLDER};
+
+/// What happened to one file of an import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportOutcome {
+    /// A new paper, decision "Undecided" (FR-01.2).
+    Added,
+    /// The file was given to an existing paper that had none yet, e.g. one
+    /// restored from a backup (FR-01.5).
+    Attached,
+    /// A paper with this file name already has its file (FR-01.5).
+    AlreadyInLibrary,
+    /// Not a PDF, damaged, or could not be read (FR-01.3).
+    NotPdf,
+    /// The library already holds 250 papers (FR-01.4).
+    OverLimit,
+    /// Copying or saving failed: disk full, no permission, ...
+    WriteFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportedFile {
+    pub file_name: String,
+    pub outcome: ImportOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportReport {
+    /// One entry per given file, in the same order.
+    pub files: Vec<ImportedFile>,
+    /// Files that are now in the library, attached ones included.
+    pub added: usize,
+}
+
+/// A paper as the paper list shows it for now (the full row comes with T-38).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaperListItem {
+    pub id: String,
+    pub file_name: Option<String>,
+    pub title: String,
+    /// The paper has a file name but the file is not in the library folder.
+    pub file_missing: bool,
+}
+
+/// Copies the given files into the library and creates a paper for each (FR-01.2).
+/// One bad file never stops the others (FR-01.3).
+pub fn import_pdfs(
+    conn: &Connection,
+    folder: &Path,
+    sources: &[PathBuf],
+) -> Result<ImportReport, LibraryError> {
+    // Names already used by papers, compared without case like Windows does.
+    let mut known: Vec<(String, String)> = conn
+        .prepare("SELECT id, file_path FROM paper WHERE file_path IS NOT NULL")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    let mut count: i64 = conn.query_row("SELECT count(*) FROM paper", [], |r| r.get(0))?;
+
+    let mut files = Vec::with_capacity(sources.len());
+    for source in sources {
+        let file_name = source
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| source.to_string_lossy().into_owned());
+        let outcome = import_one(conn, folder, source, &file_name, &mut known, &mut count)?;
+        files.push(ImportedFile { file_name, outcome });
+    }
+    let added = files
+        .iter()
+        .filter(|f| matches!(f.outcome, ImportOutcome::Added | ImportOutcome::Attached))
+        .count();
+    Ok(ImportReport { files, added })
+}
+
+fn import_one(
+    conn: &Connection,
+    folder: &Path,
+    source: &Path,
+    file_name: &str,
+    known: &mut Vec<(String, String)>,
+    count: &mut i64,
+) -> Result<ImportOutcome, LibraryError> {
+    if source.file_name().and_then(|n| n.to_str()).is_none() || !looks_like_pdf(source) {
+        return Ok(ImportOutcome::NotPdf);
+    }
+    let wanted = format!("{PDF_FOLDER}/{file_name}");
+
+    if let Some((_, stored)) = known.iter().find(|(_, path)| same_name(path, &wanted)) {
+        let target = folder.join(stored);
+        if target.exists() {
+            return Ok(ImportOutcome::AlreadyInLibrary);
+        }
+        // FR-01.5: a paper with this name but no file yet. It is already counted.
+        return Ok(match copy_new(source, &target) {
+            Ok(()) => ImportOutcome::Attached,
+            Err(_) => ImportOutcome::WriteFailed,
+        });
+    }
+
+    if *count >= MAX_PAPERS {
+        return Ok(ImportOutcome::OverLimit);
+    }
+
+    let Ok(stored) = place_file(folder, source, file_name, known) else {
+        return Ok(ImportOutcome::WriteFailed);
+    };
+    let inserted: rusqlite::Result<String> = conn.query_row(
+        "INSERT INTO paper (file_path) VALUES (?1) RETURNING id",
+        params![stored.relative],
+        |r| r.get(0),
+    );
+    match inserted {
+        Ok(id) => {
+            known.push((id, stored.relative));
+            *count += 1;
+            Ok(ImportOutcome::Added)
+        }
+        Err(_) => {
+            // Only a file copied just now is removed; an adopted one stays.
+            if stored.copied {
+                let _ = std::fs::remove_file(folder.join(&stored.relative));
+            }
+            Ok(ImportOutcome::WriteFailed)
+        }
+    }
+}
+
+struct Stored {
+    /// e.g. "pdfs/kim-2021.pdf"
+    relative: String,
+    /// False when an identical file was already in place.
+    copied: bool,
+}
+
+/// Puts the file in `pdfs/` without overwriting anything. A file already there that no
+/// paper uses (e.g. left by a crash during an earlier import) is reused if identical;
+/// otherwise the new file gets a free name such as "kim-2021 (2).pdf".
+fn place_file(
+    folder: &Path,
+    source: &Path,
+    file_name: &str,
+    known: &[(String, String)],
+) -> io::Result<Stored> {
+    std::fs::create_dir_all(folder.join(PDF_FOLDER))?;
+    let (stem, extension) = match file_name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, format!(".{ext}")),
+        _ => (file_name, String::new()),
+    };
+    for number in 1.. {
+        let candidate = if number == 1 {
+            file_name.to_string()
+        } else {
+            format!("{stem} ({number}){extension}")
+        };
+        let relative = format!("{PDF_FOLDER}/{candidate}");
+        if known.iter().any(|(_, path)| same_name(path, &relative)) {
+            continue;
+        }
+        let target = folder.join(&relative);
+        match copy_new(source, &target) {
+            Ok(()) => return Ok(Stored { relative, copied: true }),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                if same_content(source, &target)? {
+                    return Ok(Stored { relative, copied: false });
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the loop only ends by returning")
+}
+
+/// Copies to a path that must not exist yet. A half-written copy is removed.
+fn copy_new(source: &Path, target: &Path) -> io::Result<()> {
+    let mut output = OpenOptions::new().write(true).create_new(true).open(target)?;
+    let result = File::open(source)
+        .and_then(|mut input| io::copy(&mut input, &mut output))
+        .and_then(|_| output.sync_all());
+    if result.is_err() {
+        drop(output);
+        let _ = std::fs::remove_file(target);
+    }
+    result
+}
+
+/// A quick check, not a full parse: PDFs start with "%PDF-" and a complete file ends
+/// with "%%EOF". Catches other file types and most cut-off downloads.
+fn looks_like_pdf(path: &Path) -> bool {
+    let check = || -> io::Result<bool> {
+        let mut file = File::open(path)?;
+        if !file.metadata()?.is_file() {
+            return Ok(false);
+        }
+        let mut head = [0u8; 1024];
+        let read = read_up_to(&mut file, &mut head)?;
+        if !contains(&head[..read], b"%PDF-") {
+            return Ok(false);
+        }
+        let length = file.metadata()?.len();
+        file.seek(SeekFrom::Start(length.saturating_sub(4096)))?;
+        let mut tail = [0u8; 4096];
+        let read = read_up_to(&mut file, &mut tail)?;
+        Ok(contains(&tail[..read], b"%%EOF"))
+    };
+    check().unwrap_or(false)
+}
+
+fn read_up_to(file: &mut File, buffer: &mut [u8]) -> io::Result<usize> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match file.read(&mut buffer[filled..])? {
+            0 => break,
+            n => filled += n,
+        }
+    }
+    Ok(filled)
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|window| window == needle)
+}
+
+fn same_content(a: &Path, b: &Path) -> io::Result<bool> {
+    if std::fs::metadata(a)?.len() != std::fs::metadata(b)?.len() {
+        return Ok(false);
+    }
+    let (mut a, mut b) = (File::open(a)?, File::open(b)?);
+    let (mut buf_a, mut buf_b) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
+    loop {
+        let read = read_up_to(&mut a, &mut buf_a)?;
+        if read_up_to(&mut b, &mut buf_b)? != read || buf_a[..read] != buf_b[..read] {
+            return Ok(false);
+        }
+        if read == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+/// Windows file names ignore upper and lower case.
+fn same_name(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
+}
+
+/// All papers, oldest first.
+pub fn list_papers(conn: &Connection, folder: &Path) -> Result<Vec<PaperListItem>, LibraryError> {
+    let rows: Vec<(String, Option<String>, String)> = conn
+        .prepare("SELECT id, file_path, title FROM paper ORDER BY created_at, rowid")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, file_path, title)| PaperListItem {
+            id,
+            file_missing: file_path.as_ref().is_some_and(|path| !folder.join(path).is_file()),
+            file_name: file_path.map(|path| path.rsplit('/').next().unwrap_or(&path).to_string()),
+            title,
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::library::create_library;
+    use ImportOutcome::*;
+
+    const PDF: &[u8] = b"%PDF-1.4\n1 0 obj << >> endobj\ntrailer << >>\n%%EOF\n";
+
+    struct Setup {
+        _root: tempfile::TempDir,
+        library: PathBuf,
+        downloads: PathBuf,
+        conn: Connection,
+    }
+
+    fn setup() -> Setup {
+        let root = tempfile::tempdir().unwrap();
+        let library = root.path().join("library");
+        let downloads = root.path().join("downloads");
+        std::fs::create_dir_all(library.join(PDF_FOLDER)).unwrap();
+        std::fs::create_dir_all(&downloads).unwrap();
+        let conn = create_library(&library, "Review").unwrap();
+        Setup { _root: root, library, downloads, conn }
+    }
+
+    impl Setup {
+        /// Writes a file in the downloads folder and returns its path.
+        fn source(&self, name: &str, content: &[u8]) -> PathBuf {
+            let path = self.downloads.join(name);
+            std::fs::write(&path, content).unwrap();
+            path
+        }
+
+        fn import(&self, sources: &[PathBuf]) -> ImportReport {
+            import_pdfs(&self.conn, &self.library, sources).unwrap()
+        }
+
+        fn outcomes(&self, sources: &[PathBuf]) -> Vec<ImportOutcome> {
+            self.import(sources).files.into_iter().map(|f| f.outcome).collect()
+        }
+
+        fn papers(&self) -> i64 {
+            self.conn.query_row("SELECT count(*) FROM paper", [], |r| r.get(0)).unwrap()
+        }
+
+        fn stored(&self, name: &str) -> Vec<u8> {
+            std::fs::read(self.library.join(PDF_FOLDER).join(name)).unwrap()
+        }
+
+        fn files_in_pdfs(&self) -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(self.library.join(PDF_FOLDER))
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
+
+        fn fill_to(&self, papers: i64) {
+            for i in self.papers()..papers {
+                self.conn
+                    .execute("INSERT INTO paper (file_path) VALUES (?1)", [format!("pdfs/old-{i}.pdf")])
+                    .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn copies_each_pdf_and_creates_an_undecided_paper() {
+        let s = setup();
+        let source = s.source("Kim 2021.pdf", PDF);
+        let report = s.import(std::slice::from_ref(&source));
+
+        assert_eq!(report.added, 1);
+        assert_eq!(report.files, [ImportedFile { file_name: "Kim 2021.pdf".into(), outcome: Added }]);
+        assert_eq!(s.stored("Kim 2021.pdf"), PDF);
+        // The original stays where it was.
+        assert_eq!(std::fs::read(&source).unwrap(), PDF);
+        let (path, decision, status): (String, String, String) = s
+            .conn
+            .query_row("SELECT file_path, decision, text_status FROM paper", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!((path.as_str(), decision.as_str(), status.as_str()), ("pdfs/Kim 2021.pdf", "undecided", "pending"));
+    }
+
+    #[test]
+    fn at_249_papers_one_of_three_files_is_added() {
+        // FR-01.4 acceptance criterion.
+        let s = setup();
+        s.fill_to(249);
+        let sources = [s.source("a.pdf", PDF), s.source("b.pdf", PDF), s.source("c.pdf", PDF)];
+
+        let report = s.import(&sources);
+        assert_eq!(report.added, 1);
+        let outcomes: Vec<_> = report.files.iter().map(|f| f.outcome).collect();
+        assert_eq!(outcomes, [Added, OverLimit, OverLimit]);
+        assert_eq!(s.papers(), 250);
+        assert_eq!(s.files_in_pdfs(), ["a.pdf"]);
+    }
+
+    #[test]
+    fn skips_a_name_that_is_already_in_the_library_without_overwriting() {
+        // FR-01.5 acceptance criterion; Windows ignores case in file names.
+        let s = setup();
+        s.import(&[s.source("jurnal-a.pdf", PDF)]);
+        let other = b"%PDF-1.7\nsomething else\n%%EOF";
+        let again = [s.source("Jurnal-A.PDF", other)];
+
+        assert_eq!(s.outcomes(&again), [AlreadyInLibrary]);
+        assert_eq!(s.papers(), 1);
+        assert_eq!(s.stored("jurnal-a.pdf"), PDF);
+    }
+
+    #[test]
+    fn two_files_with_the_same_name_in_one_import_add_one_paper() {
+        let s = setup();
+        let first = s.source("same.pdf", PDF);
+        std::fs::create_dir_all(s.downloads.join("other")).unwrap();
+        let second = s.downloads.join("other").join("same.pdf");
+        std::fs::write(&second, PDF).unwrap();
+        assert_eq!(s.outcomes(&[first, second]), [Added, AlreadyInLibrary]);
+    }
+
+    #[test]
+    fn rejects_files_that_are_not_complete_pdfs() {
+        let s = setup();
+        let sources = [
+            s.source("notes.docx", b"PK\x03\x04 a word document"),
+            s.source("cut-off.pdf", b"%PDF-1.4\n1 0 obj << >> endobj\n"),
+            s.source("empty.pdf", b""),
+            s.downloads.join("does-not-exist.pdf"),
+            s.downloads.clone(),
+        ];
+        assert_eq!(s.outcomes(&sources), [NotPdf, NotPdf, NotPdf, NotPdf, NotPdf]);
+        assert_eq!(s.papers(), 0);
+        assert!(s.files_in_pdfs().is_empty());
+    }
+
+    #[test]
+    fn a_bad_file_does_not_stop_the_others() {
+        // FR-01.3.
+        let s = setup();
+        let sources = [s.source("a.pdf", PDF), s.source("bad.pdf", b"nope"), s.source("b.pdf", PDF)];
+        let report = s.import(&sources);
+        assert_eq!(report.added, 2);
+        assert_eq!(s.files_in_pdfs(), ["a.pdf", "b.pdf"]);
+    }
+
+    #[test]
+    fn attaches_the_file_to_a_restored_paper_even_at_the_limit() {
+        // FR-01.5: a paper restored from a backup has a file name but no file yet.
+        let s = setup();
+        s.conn.execute("INSERT INTO paper (file_path, title) VALUES ('pdfs/b.pdf', 'Restored')", []).unwrap();
+        s.fill_to(250);
+        assert!(list_papers(&s.conn, &s.library).unwrap()[0].file_missing);
+
+        let report = s.import(&[s.source("B.pdf", PDF)]);
+        assert_eq!(report.files[0].outcome, Attached);
+        assert_eq!(report.added, 1);
+        assert_eq!(s.papers(), 250);
+        // The stored name keeps its original spelling.
+        assert_eq!(s.files_in_pdfs(), ["b.pdf"]);
+        let restored = &list_papers(&s.conn, &s.library).unwrap()[0];
+        assert_eq!((restored.title.as_str(), restored.file_missing), ("Restored", false));
+    }
+
+    #[test]
+    fn reuses_an_identical_leftover_file_and_never_overwrites_a_different_one() {
+        let s = setup();
+        std::fs::write(s.library.join(PDF_FOLDER).join("same.pdf"), PDF).unwrap();
+        let different = b"%PDF-1.4\nthe user's own file\n%%EOF";
+        std::fs::write(s.library.join(PDF_FOLDER).join("other.pdf"), different).unwrap();
+
+        let report = s.import(&[s.source("same.pdf", PDF), s.source("other.pdf", PDF)]);
+        assert_eq!(report.added, 2);
+        assert_eq!(s.files_in_pdfs(), ["other (2).pdf", "other.pdf", "same.pdf"]);
+        assert_eq!(s.stored("other.pdf"), different);
+        assert_eq!(s.stored("other (2).pdf"), PDF);
+
+        let names: Vec<_> = list_papers(&s.conn, &s.library)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.file_name.unwrap())
+            .collect();
+        assert_eq!(names, ["same.pdf", "other (2).pdf"]);
+    }
+
+    #[test]
+    fn reports_a_write_failure_without_creating_papers() {
+        let s = setup();
+        // A file where the pdfs folder should be: nothing can be copied into it.
+        std::fs::remove_dir(s.library.join(PDF_FOLDER)).unwrap();
+        std::fs::write(s.library.join(PDF_FOLDER), "in the way").unwrap();
+
+        assert_eq!(s.outcomes(&[s.source("a.pdf", PDF)]), [WriteFailed]);
+        assert_eq!(s.papers(), 0);
+    }
+
+    #[test]
+    fn recreates_a_deleted_pdfs_folder() {
+        let s = setup();
+        std::fs::remove_dir(s.library.join(PDF_FOLDER)).unwrap();
+        assert_eq!(s.outcomes(&[s.source("a.pdf", PDF)]), [Added]);
+    }
+
+    #[test]
+    fn lists_papers_oldest_first_and_flags_missing_files() {
+        let s = setup();
+        s.import(&[s.source("first.pdf", PDF), s.source("second.pdf", PDF)]);
+        std::fs::remove_file(s.library.join(PDF_FOLDER).join("first.pdf")).unwrap();
+
+        let papers = list_papers(&s.conn, &s.library).unwrap();
+        let summary: Vec<_> = papers.iter().map(|p| (p.file_name.as_deref().unwrap(), p.file_missing)).collect();
+        assert_eq!(summary, [("first.pdf", true), ("second.pdf", false)]);
+    }
+
+    #[test]
+    fn the_ui_receives_the_field_names_it_expects() {
+        let s = setup();
+        let report = serde_json::to_value(s.import(&[s.source("a.pdf", PDF)])).unwrap();
+        assert_eq!(report["files"][0]["fileName"], "a.pdf");
+        assert_eq!(report["files"][0]["outcome"], "added");
+        let paper = serde_json::to_value(&list_papers(&s.conn, &s.library).unwrap()[0]).unwrap();
+        for field in ["id", "fileName", "title", "fileMissing"] {
+            assert!(paper.get(field).is_some(), "{field} is missing");
+        }
+    }
+}

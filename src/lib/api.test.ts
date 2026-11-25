@@ -3,12 +3,15 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   createLibrary,
   getAppInfo,
+  importPdfs,
   isCloudFolder,
   listLibraries,
+  listPapers,
   locateLibrary,
   openLibrary,
   openLibraryFolder,
   pickFolder,
+  pickPdfs,
   removeLibrary,
   renameLibrary,
 } from "./api";
@@ -54,6 +57,9 @@ describe("library commands", () => {
     [() => locateLibrary(1, "C:/r"), ["locate_library", { id: 1, folderPath: "C:/r" }]],
     [() => pickFolder(), ["pick_folder"]],
     [() => isCloudFolder("C:/r"), ["is_cloud_folder", { folderPath: "C:/r" }]],
+    [() => pickPdfs(), ["pick_pdfs"]],
+    [() => importPdfs(7, ["C:/a.pdf"]), ["import_pdfs", { session: 7, paths: ["C:/a.pdf"] }]],
+    [() => listPapers(7), ["list_papers", { session: 7 }]],
   ] as [() => Promise<unknown>, unknown[]][])("calls %#", async (call, expected) => {
     await call();
     expect(mockedInvoke).toHaveBeenCalledWith(...(expected as [string]));
