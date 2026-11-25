@@ -2,7 +2,7 @@
 
 SLReader is a free, open source desktop app for reading journal PDFs, screening them (Include / Exclude), and extracting data for Systematic Literature Reviews (PRISMA).
 
-> **Status: early development.** The app has not been scaffolded yet, so there is nothing to run or download. The features below describe what is planned for the first release.
+> **Status: early development.** The app builds and opens, but none of the features below exist yet. There is no release to download. The features below describe what is planned for the first release.
 
 ## Planned features
 
@@ -42,15 +42,22 @@ See the [Tauri prerequisites guide](https://tauri.app/start/prerequisites/) for 
 
 ### Commands
 
-These commands will work once the application scaffold is in the repository.
-
 ```bash
 npm install            # install UI dependencies
 npm run tauri dev      # run the app in development mode
 npm run tauri build    # build the Windows installer
 cargo test --manifest-path src-tauri/Cargo.toml   # Rust tests
 npm run test           # UI tests
+npm run check          # type check the UI
 ```
+
+The first Rust build takes several minutes. The installer is written to `src-tauri/target/release/bundle/nsis/`.
+
+### Project layout
+
+- `src/`: Svelte UI. `src/lib/api.ts` is the only file that calls the Rust core.
+- `src-tauri/`: Rust core and Tauri configuration.
+- `src-tauri/capabilities/`: what the UI is allowed to do. It only calls SLReader's own commands.
 
 ## Contributing
 

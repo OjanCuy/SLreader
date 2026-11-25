@@ -4,6 +4,8 @@ dist/
 build/
 .svelte-kit/
 src-tauri/target/
+src-tauri/gen/schemas/
+vite.config.js.timestamp-*
 
 # Secrets and local settings
 .env
