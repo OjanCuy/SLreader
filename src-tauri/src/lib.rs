@@ -1,4 +1,12 @@
+pub mod db;
+
+use std::sync::Mutex;
+
 use serde::Serialize;
+use tauri::Manager;
+
+/// The open app database (registry, AI providers, settings), shared by all commands.
+pub struct AppDb(pub Mutex<rusqlite::Connection>);
 
 /// Basic facts about the running app, sent to the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -25,6 +33,13 @@ fn app_info() -> AppInfo {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            // %APPDATA%\io.github.ojancuy.slreader on Windows.
+            let data_dir = app.path().app_data_dir()?;
+            let conn = db::app::open_app_db(&data_dir)?;
+            app.manage(AppDb(Mutex::new(conn)));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![app_info])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
