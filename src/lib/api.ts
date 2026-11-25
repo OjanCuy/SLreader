@@ -267,6 +267,46 @@ export function listExtractionTags(session: number): Promise<ExtractionTag[]> {
   return invoke("list_extraction_tags", { session });
 }
 
+// ---- Screening (FR-04.1 to FR-04.4). Types mirror src-tauri/src/decisions.rs. ----
+
+export type Decision = "undecided" | "include" | "exclude";
+
+export interface Screening {
+  decision: Decision;
+  /** Only counts while the decision is "exclude" (FR-04.3). */
+  exclusionReasonId: string | null;
+  assessmentNote: string;
+}
+
+export function getScreening(session: number, paperId: string): Promise<Screening> {
+  return invoke("get_screening", { session, paperId });
+}
+
+/** Only for the user's own decision action: nothing else may change a decision (FR-11.4). */
+export function setDecision(session: number, paperId: string, decision: Decision): Promise<void> {
+  return invoke("set_decision", { session, paperId, decision });
+}
+
+/** Null is "No reason". */
+export function setExclusionReason(session: number, paperId: string, reasonId: string | null): Promise<void> {
+  return invoke("set_exclusion_reason", { session, paperId, reasonId });
+}
+
+export function setAssessmentNote(session: number, paperId: string, note: string): Promise<void> {
+  return invoke("set_assessment_note", { session, paperId, note });
+}
+
+export interface ExclusionReason {
+  id: string;
+  code: string;
+  label: string;
+}
+
+/** The exclusion reasons of the open library, in their order (FR-08.1). */
+export function listExclusionReasons(session: number): Promise<ExclusionReason[]> {
+  return invoke("list_exclusion_reasons", { session });
+}
+
 /** Shows the system file picker for one PDF. Null when the user cancels. */
 export function pickPdf(): Promise<string | null> {
   return invoke("pick_pdf");

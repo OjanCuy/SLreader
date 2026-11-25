@@ -1,5 +1,6 @@
 mod commands;
 pub mod db;
+pub mod decisions;
 pub mod extraction;
 pub mod highlights;
 pub mod libraries;
@@ -87,6 +88,11 @@ pub fn run() {
             commands::update_highlight,
             commands::delete_highlight,
             commands::list_extraction_tags,
+            commands::get_screening,
+            commands::set_decision,
+            commands::set_exclusion_reason,
+            commands::set_assessment_note,
+            commands::list_exclusion_reasons,
             commands::delete_paper,
             commands::get_last_page,
             commands::save_last_page,

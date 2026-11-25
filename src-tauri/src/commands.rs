@@ -7,6 +7,7 @@ use std::sync::{Mutex, MutexGuard};
 use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::decisions::{self, Decision, ExclusionReason, Screening};
 use crate::extraction::Extraction;
 use crate::highlights::{self, ExtractionTag, Highlight, HighlightCategory, HighlightEdit, NewHighlight};
 use crate::libraries::{self, LibraryError, LibrarySummary};
@@ -330,6 +331,67 @@ pub fn delete_highlight(
     let current = lock(&current.0);
     let conn = libraries::library_for_writing(&current, session)?;
     highlights::delete_highlight(conn, &highlight_id)
+}
+
+/// The decision, exclusion reason, and assessment note of a paper (FR-04.1 to FR-04.4).
+#[tauri::command(async)]
+pub fn get_screening(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paper_id: String,
+) -> Result<Screening, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_reading(&current, session)?;
+    decisions::screening(conn, &paper_id)
+}
+
+/// The user's decision (FR-04.1). Only the UI's decision control calls this: nothing
+/// else may change a decision (FR-11.4).
+#[tauri::command(async)]
+pub fn set_decision(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paper_id: String,
+    decision: Decision,
+) -> Result<(), LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    decisions::set_decision(conn, &paper_id, decision)
+}
+
+#[tauri::command(async)]
+pub fn set_exclusion_reason(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paper_id: String,
+    reason_id: Option<String>,
+) -> Result<(), LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    decisions::set_exclusion_reason(conn, &paper_id, reason_id.as_deref())
+}
+
+#[tauri::command(async)]
+pub fn set_assessment_note(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paper_id: String,
+    note: String,
+) -> Result<(), LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    decisions::set_assessment_note(conn, &paper_id, &note)
+}
+
+/// The library's exclusion reasons, in their order (FR-08.1).
+#[tauri::command(async)]
+pub fn list_exclusion_reasons(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+) -> Result<Vec<ExclusionReason>, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_reading(&current, session)?;
+    decisions::list_reasons(conn)
 }
 
 /// The page mode, an app setting shared by all libraries (FR-02.2).

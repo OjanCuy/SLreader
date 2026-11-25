@@ -1,13 +1,13 @@
 <!--
-  Temporary: the open library with its paper list on the left and the reader (T-16)
-  in the middle, under the start of the S-02 top bar.
-  "Delete paper" sits at the bottom of the left panel until the Decision tab exists
-  (T-22, T-38).
-  The real Workspace layout comes with T-38.
+  Temporary: the open library with its paper list on the left, the reader (T-16) in
+  the middle, and the Decision and Highlights tabs on the right, under the start of
+  the S-02 top bar. The real Workspace layout comes with T-38.
   App.svelte mounts it again for every opened library, so no state carries over.
 -->
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
+  import DecisionPanel from "../decision/DecisionPanel.svelte";
+  import { createDecisionStore } from "../decision/decisionStore.svelte";
   import {
     deletePaper,
     importPdfs,
@@ -22,6 +22,7 @@
   import Icon from "../lib/components/Icon.svelte";
   import InlineBanner from "../lib/components/InlineBanner.svelte";
   import ProgressBar from "../lib/components/ProgressBar.svelte";
+  import TabBar, { tabId, tabPanelId } from "../lib/components/TabBar.svelte";
   import { dismissToast, showToast } from "../lib/components/toasts.svelte";
   import { ADD_ANYWAY, identicalMessage, importMessages, SKIP } from "../lib/importTexts";
   import { LIBRARY_PROBLEMS } from "../lib/libraryProblems";
@@ -52,6 +53,18 @@
   const selectedPaper = $derived(papers?.find((paper) => paper.id === selected));
   /** Shared by the reader and the Highlights tab. */
   const highlights = createHighlightStore();
+  const decisions = createDecisionStore();
+  /** The right panel's tab; it stays when another paper is opened. */
+  let tab = $state<"decision" | "highlights">("decision");
+  const TABS = [
+    { value: "decision", label: "Decision" },
+    { value: "highlights", label: "Highlights" },
+  ] as const;
+
+  $effect(() => {
+    const id = selected;
+    untrack(() => (id === null ? decisions.close() : decisions.open(session, id)));
+  });
   /** The paper in the "Delete paper?" dialog. */
   let confirming = $state<PaperListItem | null>(null);
   let deleting = $state(false);
@@ -68,6 +81,7 @@
     stop.catch(() => {});
     return () => {
       highlights.flush();
+      decisions.dispose();
       questions.forEach(dismissToast);
       stop.then((unlisten) => unlisten()).catch(() => {});
     };
@@ -125,6 +139,7 @@
     deleting = true;
     try {
       await deletePaper(session, paper.id);
+      decisions.forget(paper.id);
       if (selected === paper.id) selected = null;
       await refresh();
     } catch (failure) {
@@ -194,12 +209,6 @@
           {/each}
         </ul>
       {/if}
-
-      {#if selectedPaper && !problem?.readOnly}
-        <div class="delete">
-          <Button variant="ghost" onclick={() => (confirming = selectedPaper)}>Delete paper</Button>
-        </div>
-      {/if}
     </nav>
 
     <main>
@@ -226,8 +235,25 @@
     </main>
 
     {#if selectedPaper}
-      <aside aria-label="Highlights">
-        <HighlightsPanel store={highlights} readOnly={problem?.readOnly ?? false} />
+      <aside>
+        <TabBar tabs={TABS} bind:value={tab} prefix="paper" />
+        <div
+          class="tab-panel"
+          role="tabpanel"
+          id={tabPanelId("paper")}
+          aria-labelledby={tabId("paper", tab)}
+        >
+          {#if tab === "decision"}
+            <DecisionPanel
+              store={decisions}
+              name={selectedPaper.fileName ?? selectedPaper.title}
+              readOnly={problem?.readOnly ?? false}
+              ondelete={() => (confirming = selectedPaper)}
+            />
+          {:else}
+            <HighlightsPanel store={highlights} readOnly={problem?.readOnly ?? false} />
+          {/if}
+        </div>
       </aside>
     {/if}
   </div>
@@ -263,10 +289,17 @@
   }
 
   aside {
+    display: flex;
+    flex-direction: column;
     min-height: 0;
-    overflow-y: auto;
     border-left: 1px solid var(--border-subtle);
     background: var(--surface-panel);
+  }
+
+  .tab-panel {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
   }
 
   nav {
@@ -306,19 +339,6 @@
     align-items: center;
     gap: var(--space-2);
     color: var(--text-secondary);
-  }
-
-  /* Stays in view at the bottom of the panel, below a long paper list. */
-  .delete {
-    position: sticky;
-    bottom: calc(-1 * var(--space-4));
-    display: flex;
-    flex-direction: column;
-    margin-top: auto;
-    margin-bottom: calc(-1 * var(--space-4));
-    padding: var(--space-2) 0 var(--space-4);
-    border-top: 1px solid var(--border-subtle);
-    background: var(--surface-panel);
   }
 
   ul {

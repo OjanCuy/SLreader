@@ -70,7 +70,6 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 describe("the Highlights tab (FR-03.3, FR-03.4)", () => {
   it("shows the legend and a card per highlight, by page", async () => {
     await show();
-    expect(screen.getByRole("heading", { name: "Highlights" })).toBeTruthy();
     const legend = Array.from(document.querySelectorAll(".legend li")).map((li) => li.textContent?.trim());
     expect(legend).toEqual(["Inclusion", "Method"]);
     expect(cards()).toHaveLength(2);

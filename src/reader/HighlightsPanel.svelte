@@ -1,7 +1,6 @@
 <!--
   S-02 Tab Highlights (FR-03.3, FR-03.4; Brief Section 6): the legend of the library's
   categories and a card for every highlight of the open paper, by page.
-  The tab bar around it comes with T-38.
 -->
 <script lang="ts">
   import type { Highlight } from "../lib/api";
@@ -42,8 +41,6 @@
 </script>
 
 <div class="panel">
-  <h2>Highlights</h2>
-
   {#if store.status === "error"}
     <p class="problem" role="alert"><Icon name="error" />{GENERIC_ERROR}</p>
   {:else if store.status === "ready"}
@@ -96,11 +93,6 @@
     flex-direction: column;
     gap: var(--space-3);
     padding: var(--space-4) var(--panel-padding);
-  }
-
-  h2 {
-    margin: 0;
-    font: var(--type-display);
   }
 
   ul {
