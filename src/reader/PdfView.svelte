@@ -58,6 +58,10 @@
      * first page, and only that page is kept (FR-03.5).
      */
     onhighlight?: (highlight: NewHighlight, crossed: boolean) => void;
+    /** The selected highlight, outlined on its page. */
+    activeHighlight?: string | null;
+    /** Show this highlight and flash it (FR-03.4); `n` changes on every request. */
+    jump?: { id: string; n: number } | null;
   }
 
   let {
@@ -69,6 +73,8 @@
     highlights = [],
     categories = [],
     onhighlight,
+    activeHighlight = null,
+    jump = null,
   }: Props = $props();
 
   let zoom = $state(1);
@@ -223,6 +229,54 @@
 
   const marksByPage = $derived(pageMarks(highlights, categories));
 
+  // ---- Jumping to a highlight (FR-03.4) ----
+
+  /** The highlight being flashed after a jump. */
+  let flashing = $state<string | null>(null);
+  let flashTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The last request carried out. */
+  let jumped = 0;
+
+  $effect(() => {
+    const request = jump;
+    // Not before the view is at its start page, which would undo the jump.
+    if (!request || known === null) return;
+    untrack(() => {
+      if (request.n === jumped) return;
+      jumped = request.n;
+      showHighlight(request.id);
+    });
+  });
+
+  $effect(() => () => clearTimeout(flashTimer));
+
+  async function showHighlight(id: string) {
+    const highlight = highlights.find((each) => each.id === id);
+    const target = highlight && layout.pages[highlight.page - 1];
+    const first = highlight?.rects[0];
+    if (!target || !first) return;
+    scroller.scrollTop = scrollToShow(
+      scroller.scrollTop,
+      viewHeight,
+      target.top + first.y * target.height,
+      first.h * target.height,
+    );
+    scrollTop = scroller.scrollTop;
+    const left = (Math.max(layout.width, viewWidth) - target.width) / 2;
+    scroller.scrollLeft = scrollToShow(
+      scroller.scrollLeft,
+      viewWidth,
+      left + first.x * target.width,
+      first.w * target.width,
+    );
+    // Off and on again, so that jumping to the same one flashes again.
+    clearTimeout(flashTimer);
+    flashing = null;
+    await tick();
+    flashing = id;
+    flashTimer = setTimeout(() => (flashing = null), 2000);
+  }
+
   /** The selection the popover is open for. */
   let picking = $state.raw<PageSelection | null>(null);
 
@@ -338,6 +392,8 @@
               {zoom}
               {mode}
               highlights={marksByPage.get(slot + 1)}
+              {activeHighlight}
+              {flashing}
               matches={matchesByPage.get(slot)}
               active={active?.page === slot ? active : null}
               reveal={active?.page === slot ? reveal : 0}

@@ -30,6 +30,9 @@
     onactive?: (box: Box) => void;
     /** The highlights on this page, with their category's color and name (FR-03.2). */
     highlights?: PageMark[];
+    /** The selected highlight (outlined) and the one flashing after a jump. */
+    activeHighlight?: string | null;
+    flashing?: string | null;
   }
 
   let {
@@ -38,6 +41,8 @@
     zoom,
     mode = "normal",
     highlights = [],
+    activeHighlight = null,
+    flashing = null,
     matches = [],
     active = null,
     reveal = 0,
@@ -162,6 +167,8 @@
     {#each highlights as highlight (highlight.id)}
       <div
         class="highlight"
+        class:active={highlight.id === activeHighlight}
+        class:flash={highlight.id === flashing}
         role="img"
         aria-label={highlight.name}
         data-highlight={highlight.id}
@@ -246,6 +253,30 @@
   /* On a dark page "multiply" would hide them (Brief Section 3, T-18). */
   .dark .hl-rect {
     mix-blend-mode: normal;
+  }
+
+  .active .hl-rect {
+    outline: 1px solid var(--hl-active-border);
+  }
+
+  /* After a jump (motion.flash). With reduced motion the animation takes no time, and
+     the outline stays still until the class goes, 2 seconds later. */
+  .flash .hl-rect {
+    outline: 2px solid var(--hl-active-border);
+    animation: flash var(--motion-flash) ease-out;
+  }
+
+  @keyframes flash {
+    from {
+      outline-width: 6px;
+    }
+    to {
+      outline-width: 2px;
+    }
+  }
+
+  .dark .hl-rect {
+    outline-color: var(--hl-dark-active-border);
   }
 
   .mark {

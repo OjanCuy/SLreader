@@ -8,23 +8,17 @@
   to open the PDF and, once, to extract its text; it is never stored.
 -->
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import {
-    addHighlight,
     attachPdf,
     extractLockedPaperText,
     getLastPage,
     getPageMode,
-    listHighlightCategories,
-    listHighlights,
     pickPdf,
     readPaperPdf,
     saveLastPage,
     setPageMode,
-    type Highlight,
-    type HighlightCategory,
     type LibraryError,
-    type NewHighlight,
     type PageMode,
   } from "../lib/api";
   import Button from "../lib/components/Button.svelte";
@@ -33,8 +27,8 @@
   import Spinner from "../lib/components/Spinner.svelte";
   import { showToast } from "../lib/components/toasts.svelte";
   import { attachMessage } from "../lib/importTexts";
-  import { libraryErrorMessage, SAVE_ERROR } from "../lib/libraryTexts";
-  import { crossPageMessage } from "./highlights";
+  import { libraryErrorMessage } from "../lib/libraryTexts";
+  import { createHighlightStore, type HighlightStore } from "./highlightStore.svelte";
   import { createPageSaver, type PageSaver } from "./pageSaver";
   import PasswordDialog from "./PasswordDialog.svelte";
   import PdfView from "./PdfView.svelte";
@@ -48,9 +42,17 @@
     readOnly: boolean;
     /** A file was attached: the paper list should refresh. */
     onattached: () => void;
+    /** The highlights of the open paper, shared with the Highlights tab. */
+    store?: HighlightStore;
   }
 
-  let { session, paperId, readOnly, onattached }: Props = $props();
+  let {
+    session,
+    paperId,
+    readOnly,
+    onattached,
+    store = createHighlightStore(),
+  }: Props = $props();
 
   type View =
     | { kind: "empty" }
@@ -94,37 +96,6 @@
     setPageMode(next)?.catch((failure) => console.error("The page mode was not saved", failure));
   }
 
-  /** The highlights of the open paper (FR-03.2). */
-  let highlights = $state.raw<Highlight[]>([]);
-  /** The library's highlight categories (FR-03.1), read again for each paper. */
-  let categories = $state.raw<HighlightCategory[]>([]);
-
-  /**
-   * The PDF still opens when its highlights or the categories cannot be read; without
-   * categories no highlight is drawn or made.
-   */
-  async function storedHighlights(id: string): Promise<[Highlight[], HighlightCategory[]]> {
-    try {
-      return await Promise.all([listHighlights(session, id), listHighlightCategories(session)]);
-    } catch (failure) {
-      console.error("The highlights could not be read", failure);
-      return [[], []];
-    }
-  }
-
-  /** Saves a highlight; on failure the user can try again (PRD Section 8). */
-  async function saveHighlight(id: string, highlight: NewHighlight, crossed: boolean) {
-    try {
-      const saved = await addHighlight(session, id, highlight);
-      if (paperId === id) highlights = [...highlights, saved];
-      if (crossed) showToast(crossPageMessage(highlight.page));
-    } catch {
-      showToast(SAVE_ERROR, "error", [
-        { label: "Try again", onselect: () => saveHighlight(id, highlight, crossed) },
-      ]);
-    }
-  }
-
   /** The first page is a fine place to start when the stored one cannot be read. */
   async function lastPage(id: string): Promise<number> {
     try {
@@ -145,11 +116,13 @@
       wrongPassword = false;
     }
     if (id === null) {
+      untrack(() => store.close());
       view = { kind: "empty" };
       return;
     }
     view = { kind: "loading" };
-    highlights = [];
+    // The Highlights tab shows them even when the PDF cannot be opened.
+    const highlightsRead = untrack(() => store.open(session, id));
     let stopped = false;
     let opened: OpenedPdf | undefined;
     // Bound to this paper, so a late save never goes to another one.
@@ -163,15 +136,14 @@
 
     (async () => {
       try {
-        const [bytes, startPage, stored] = await Promise.all([
+        const [bytes, startPage] = await Promise.all([
           readPaperPdf(session, id),
           lastPage(id),
-          storedHighlights(id),
+          highlightsRead,
         ]);
         if (stopped) return;
         opened = await openPdf(bytes, tried);
         if (stopped) return opened.close();
-        [highlights, categories] = stored;
         view = { kind: "ready", pdf: opened, startPage, saver };
         askingPassword = false;
         wrongPassword = false;
@@ -243,11 +215,11 @@
         onpagechange={view.saver.change}
         {mode}
         onmode={chooseMode}
-        {highlights}
-        {categories}
-        onhighlight={readOnly
-          ? undefined
-          : (highlight, crossed) => paperId && saveHighlight(paperId, highlight, crossed)}
+        highlights={store.highlights}
+        categories={store.categories}
+        activeHighlight={store.activeId}
+        jump={store.jump}
+        onhighlight={readOnly ? undefined : store.add}
       />
     {/key}
   {:else if view.kind === "loading"}

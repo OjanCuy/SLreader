@@ -239,6 +239,34 @@ export function addHighlight(session: number, paperId: string, highlight: NewHig
   return invoke("add_highlight", { session, paperId, highlight });
 }
 
+/** What the user can change on a highlight (FR-03.3); all of it is sent every time. */
+export interface HighlightEdit {
+  categoryId: string;
+  /** Null is "No tag". */
+  extractionTagId: string | null;
+  note: string;
+}
+
+/** Rejects for a read-only library or a highlight that no longer exists. */
+export function updateHighlight(session: number, highlightId: string, edit: HighlightEdit): Promise<void> {
+  return invoke("update_highlight", { session, highlightId, edit });
+}
+
+/** Deletes a highlight and its note. Only call it after the user has confirmed. */
+export function deleteHighlight(session: number, highlightId: string): Promise<void> {
+  return invoke("delete_highlight", { session, highlightId });
+}
+
+export interface ExtractionTag {
+  id: string;
+  label: string;
+}
+
+/** The extraction tags of the open library, in their order (FR-08.2). */
+export function listExtractionTags(session: number): Promise<ExtractionTag[]> {
+  return invoke("list_extraction_tags", { session });
+}
+
 /** Shows the system file picker for one PDF. Null when the user cancels. */
 export function pickPdf(): Promise<string | null> {
   return invoke("pick_pdf");

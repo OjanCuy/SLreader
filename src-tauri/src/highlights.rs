@@ -105,6 +105,25 @@ pub struct NewHighlight {
     pub rects: Vec<Rect>,
 }
 
+/// The parts of a highlight the user can change in the Highlights tab (FR-03.3). All
+/// of them are sent every time. Page, text, and position never change.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HighlightEdit {
+    pub category_id: String,
+    /// `None` is "No tag".
+    pub extraction_tag_id: Option<String>,
+    pub note: String,
+}
+
+/// An extraction tag of the library, for the tag choice of a highlight. Managing
+/// tags is T-35.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ExtractionTag {
+    pub id: String,
+    pub label: String,
+}
+
 /// More rectangles than this is not a selection of text on one page.
 const MAX_RECTS: usize = 2000;
 
@@ -158,16 +177,53 @@ pub fn list_categories(conn: &Connection) -> Result<Vec<HighlightCategory>, Libr
     Ok(categories)
 }
 
+fn exists(conn: &Connection, sql: &str, id: &str) -> Result<bool, LibraryError> {
+    Ok(conn.query_row(sql, [id], |r| r.get::<_, i64>(0)).optional()?.is_some())
+}
+
+const CATEGORY_EXISTS: &str = "SELECT 1 FROM highlight_category WHERE id = ?1";
+
+/// The library's extraction tags, in their order (FR-08.2).
+pub fn list_tags(conn: &Connection) -> Result<Vec<ExtractionTag>, LibraryError> {
+    let mut stmt = conn.prepare("SELECT id, label FROM extraction_tag ORDER BY sort_order, rowid")?;
+    let rows = stmt.query_map([], |r| Ok(ExtractionTag { id: r.get(0)?, label: r.get(1)? }))?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// Saves the category, tag, and note of a highlight (FR-03.3).
+pub fn update_highlight(conn: &Connection, highlight_id: &str, edit: &HighlightEdit) -> Result<(), LibraryError> {
+    if !exists(conn, CATEGORY_EXISTS, &edit.category_id)? {
+        return Err(invalid("no such category"));
+    }
+    if let Some(tag) = &edit.extraction_tag_id
+        && !exists(conn, "SELECT 1 FROM extraction_tag WHERE id = ?1", tag)?
+    {
+        return Err(invalid("no such tag"));
+    }
+    let changed = conn.execute(
+        "UPDATE highlight SET highlight_category_id = ?1, extraction_tag_id = ?2, note = ?3 WHERE id = ?4",
+        params![edit.category_id, edit.extraction_tag_id, edit.note, highlight_id],
+    )?;
+    if changed == 0 {
+        return Err(invalid("no such highlight"));
+    }
+    Ok(())
+}
+
+/// Deletes one highlight and its note (FR-03.3). The UI has asked the user to confirm
+/// (O-10). Deleting one that is already gone is fine.
+pub fn delete_highlight(conn: &Connection, highlight_id: &str) -> Result<(), LibraryError> {
+    conn.execute("DELETE FROM highlight WHERE id = ?1", [highlight_id])?;
+    Ok(())
+}
+
 /// Saves a new highlight on a paper and returns it.
 pub fn add_highlight(conn: &Connection, paper_id: &str, new: &NewHighlight) -> Result<Highlight, LibraryError> {
     check(new)?;
-    let exists = |sql: &str, id: &str| -> Result<bool, LibraryError> {
-        Ok(conn.query_row(sql, [id], |r| r.get::<_, i64>(0)).optional()?.is_some())
-    };
-    if !exists("SELECT 1 FROM paper WHERE id = ?1", paper_id)? {
+    if !exists(conn, "SELECT 1 FROM paper WHERE id = ?1", paper_id)? {
         return Err(LibraryError::new(ErrorCode::Other, format!("no paper with id {paper_id}")));
     }
-    if !exists("SELECT 1 FROM highlight_category WHERE id = ?1", &new.category_id)? {
+    if !exists(conn, CATEGORY_EXISTS, &new.category_id)? {
         return Err(invalid("no such category"));
     }
     let rects = serde_json::to_string(&new.rects).map_err(|e| invalid(&e.to_string()))?;
@@ -348,6 +404,93 @@ mod tests {
         let after: String =
             conn.query_row("SELECT decision || last_page || text_status FROM paper", [], |r| r.get(0)).unwrap();
         assert_eq!(before, after);
+    }
+
+    fn add_tag(conn: &Connection, label: &str, order: i64) -> String {
+        conn.query_row(
+            "INSERT INTO extraction_tag (label, sort_order) VALUES (?1, ?2) RETURNING id",
+            params![label, order],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn lists_tags_in_their_order() {
+        let (_dir, conn, _) = library_with_paper();
+        assert!(list_tags(&conn).unwrap().is_empty());
+        add_tag(&conn, "Sample size", 1);
+        add_tag(&conn, "FCR", 0);
+        let labels: Vec<String> = list_tags(&conn).unwrap().into_iter().map(|t| t.label).collect();
+        assert_eq!(labels, ["FCR", "Sample size"]);
+    }
+
+    #[test]
+    fn changes_only_the_category_tag_and_note() {
+        let (dir, conn, paper) = library_with_paper();
+        let tag = add_tag(&conn, "FCR", 0);
+        let saved = add_highlight(&conn, &paper, &new(&conn, 2, PaletteColor::Green, vec![LINE])).unwrap();
+        let other = add_highlight(&conn, &paper, &new(&conn, 3, PaletteColor::Green, vec![LINE])).unwrap();
+        let edit = HighlightEdit {
+            category_id: category(&conn, PaletteColor::Red),
+            extraction_tag_id: Some(tag.clone()),
+            note: "  Table 3, see [#46]\n".into(),
+        };
+        update_highlight(&conn, &saved.id, &edit).unwrap();
+        drop(conn);
+        let conn = crate::db::library::open_library(dir.path()).unwrap().conn;
+
+        let expected = Highlight {
+            category_id: edit.category_id.clone(),
+            extraction_tag_id: Some(tag),
+            note: edit.note.clone(),
+            ..saved.clone()
+        };
+        assert_eq!(list_highlights(&conn, &paper).unwrap(), [expected, other]);
+
+        // "No tag" and an empty note.
+        let cleared = HighlightEdit { extraction_tag_id: None, note: String::new(), ..edit };
+        update_highlight(&conn, &saved.id, &cleared).unwrap();
+        let listed = list_highlights(&conn, &paper).unwrap();
+        assert_eq!((listed[0].extraction_tag_id.clone(), listed[0].note.as_str()), (None, ""));
+    }
+
+    #[test]
+    fn refuses_a_change_to_something_that_does_not_exist() {
+        let (_dir, conn, paper) = library_with_paper();
+        let saved = add_highlight(&conn, &paper, &new(&conn, 1, PaletteColor::Green, vec![LINE])).unwrap();
+        let good = HighlightEdit {
+            category_id: saved.category_id.clone(),
+            extraction_tag_id: None,
+            note: "n".into(),
+        };
+        let no_category = HighlightEdit { category_id: "nope".into(), ..good.clone() };
+        let no_tag = HighlightEdit { extraction_tag_id: Some("nope".into()), ..good.clone() };
+        assert!(update_highlight(&conn, &saved.id, &no_category).is_err());
+        assert!(update_highlight(&conn, &saved.id, &no_tag).is_err());
+        assert!(update_highlight(&conn, "no-such-highlight", &good).is_err());
+        assert_eq!(list_highlights(&conn, &paper).unwrap(), [saved]);
+    }
+
+    #[test]
+    fn deletes_only_that_highlight_and_leaves_the_decision() {
+        let (_dir, conn, paper) = library_with_paper();
+        conn.execute("UPDATE paper SET decision = 'exclude' WHERE id = ?1", [&paper]).unwrap();
+        let first = add_highlight(&conn, &paper, &new(&conn, 1, PaletteColor::Red, vec![LINE])).unwrap();
+        let second = add_highlight(&conn, &paper, &new(&conn, 2, PaletteColor::Red, vec![LINE])).unwrap();
+
+        delete_highlight(&conn, &first.id).unwrap();
+        assert_eq!(list_highlights(&conn, &paper).unwrap(), [second]);
+        // Already gone: nothing else is touched.
+        delete_highlight(&conn, &first.id).unwrap();
+        let (decision, papers, categories): (String, i64, i64) = conn
+            .query_row(
+                "SELECT decision, (SELECT count(*) FROM paper), (SELECT count(*) FROM highlight_category) FROM paper",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((decision.as_str(), papers, categories), ("exclude", 1, 4));
     }
 
     #[test]

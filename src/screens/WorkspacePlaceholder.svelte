@@ -26,6 +26,8 @@
   import { ADD_ANYWAY, identicalMessage, importMessages, SKIP } from "../lib/importTexts";
   import { LIBRARY_PROBLEMS } from "../lib/libraryProblems";
   import { CLOUD_WARNING, libraryErrorMessage, libraryTitle } from "../lib/libraryTexts";
+  import { createHighlightStore } from "../reader/highlightStore.svelte";
+  import HighlightsPanel from "../reader/HighlightsPanel.svelte";
   import Reader from "../reader/Reader.svelte";
   import DeletePaperDialog from "./DeletePaperDialog.svelte";
   import DropZone from "./DropZone.svelte";
@@ -48,6 +50,8 @@
   /** The paper open in the reader. */
   let selected = $state<string | null>(null);
   const selectedPaper = $derived(papers?.find((paper) => paper.id === selected));
+  /** Shared by the reader and the Highlights tab. */
+  const highlights = createHighlightStore();
   /** The paper in the "Delete paper?" dialog. */
   let confirming = $state<PaperListItem | null>(null);
   let deleting = $state(false);
@@ -63,6 +67,7 @@
     });
     stop.catch(() => {});
     return () => {
+      highlights.flush();
       questions.forEach(dismissToast);
       stop.then((unlisten) => unlisten()).catch(() => {});
     };
@@ -158,7 +163,7 @@
     <div class="actions">{@render uploadButton()}</div>
   </header>
 
-  <div class="body">
+  <div class="body" class:with-panel={selectedPaper}>
     <nav aria-label="Papers">
       <h1>{libraryTitle(library)}</h1>
       {#if problem?.readOnly}
@@ -210,9 +215,21 @@
           {/snippet}
         </EmptyState>
       {:else}
-        <Reader {session} paperId={selected} readOnly={problem?.readOnly ?? false} onattached={refresh} />
+        <Reader
+          {session}
+          paperId={selected}
+          readOnly={problem?.readOnly ?? false}
+          onattached={refresh}
+          store={highlights}
+        />
       {/if}
     </main>
+
+    {#if selectedPaper}
+      <aside aria-label="Highlights">
+        <HighlightsPanel store={highlights} readOnly={problem?.readOnly ?? false} />
+      </aside>
+    {/if}
   </div>
 </div>
 
@@ -238,6 +255,18 @@
     display: grid;
     grid-template-columns: 260px minmax(0, 1fr);
     min-height: 0;
+  }
+
+  /* The right panel narrows before the reader gets too small; T-38 adds the stacked mode. */
+  .body.with-panel {
+    grid-template-columns: 260px minmax(0, 1fr) clamp(240px, 30vw, 380px);
+  }
+
+  aside {
+    min-height: 0;
+    overflow-y: auto;
+    border-left: 1px solid var(--border-subtle);
+    background: var(--surface-panel);
   }
 
   nav {

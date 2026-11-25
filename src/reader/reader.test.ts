@@ -6,6 +6,7 @@ import { dismissToast, toasts } from "../lib/components/toasts.svelte";
 import ToastRegion from "../lib/components/ToastRegion.svelte";
 import { attachMessage } from "../lib/importTexts";
 import { SAVE_ERROR } from "../lib/libraryTexts";
+import { createHighlightStore } from "./highlightStore.svelte";
 import * as pdfjs from "./pdfjs";
 import Reader from "./Reader.svelte";
 import * as selection from "./selection";
@@ -651,6 +652,37 @@ describe("last page read (FR-02.3)", () => {
     await vi.waitFor(() => expect(field().value).toBe("6"));
     view.unmount();
     expect(mocked.saveLastPage).not.toHaveBeenCalled();
+  });
+
+  it("jumps to a highlight and flashes it (FR-03.4)", async () => {
+    mocked.listHighlightCategories.mockResolvedValue([{ id: "c", label: "Method", color: "blue", sortOrder: 0 }]);
+    mocked.listHighlights.mockResolvedValue([
+      {
+        id: "h1",
+        page: 6,
+        categoryId: "c",
+        text: "t",
+        rects: [{ x: 0.1, y: 0.5, w: 0.3, h: 0.02 }],
+        note: "",
+        extractionTagId: null,
+        createdAt: "",
+      },
+    ]);
+    mocked.getLastPage.mockResolvedValue(1);
+    const store = createHighlightStore();
+    const { container } = render(Reader, { session: 7, paperId: "p1", readOnly: false, onattached: vi.fn(), store });
+    await screen.findByText("/ 10");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    store.show("h1");
+    await vi.waitFor(() => expect(field().value).toBe("6"));
+    await vi.waitFor(() => expect(container.querySelector(".highlight.flash.active")).toBeTruthy());
+    // The highlight itself is in view, not only the top of its page.
+    const scroller = container.querySelector<HTMLElement>(".scroller")!;
+    const slot = container.querySelectorAll<HTMLElement>(".slot")[5];
+    const target = parseFloat(slot.style.top) + 0.5 * parseFloat(slot.style.height);
+    expect(target).toBeGreaterThan(scroller.scrollTop);
+    expect(target).toBeLessThan(scroller.scrollTop + 600);
   });
 
   it("saves the page the user moved to", async () => {

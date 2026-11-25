@@ -67,6 +67,10 @@
   --hl-pink-swatch: light-dark(#b23a7a, #ee8cc0);
   --hl-gray-swatch: light-dark(#6b7078, #a9aeb6);
 
+  /* Outline of the selected highlight on the page; "dark" is for the dark page mode. */
+  --hl-active-border: #1f3a68;
+  --hl-dark-active-border: #8fb0e8;
+
   /* PDF page modes (FR-02.2), chosen in the reader and independent of the app theme.
      Dark inverts the drawing and turns the hues back, so charts keep their colors. */
   --page-normal: #ffffff;

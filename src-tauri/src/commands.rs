@@ -8,7 +8,7 @@ use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::extraction::Extraction;
-use crate::highlights::{self, Highlight, HighlightCategory, NewHighlight};
+use crate::highlights::{self, ExtractionTag, Highlight, HighlightCategory, HighlightEdit, NewHighlight};
 use crate::libraries::{self, LibraryError, LibrarySummary};
 use crate::papers::{self, ImportOutcome, ImportReport, PaperListItem};
 use crate::settings::{self, PageMode};
@@ -294,6 +294,42 @@ pub fn add_highlight(
     let current = lock(&current.0);
     let conn = libraries::library_for_writing(&current, session)?;
     highlights::add_highlight(conn, &paper_id, &highlight)
+}
+
+/// The library's extraction tags, in their order (FR-08.2).
+#[tauri::command(async)]
+pub fn list_extraction_tags(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+) -> Result<Vec<ExtractionTag>, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_reading(&current, session)?;
+    highlights::list_tags(conn)
+}
+
+/// Saves a highlight's category, tag, and note (FR-03.3). Refused for a read-only library.
+#[tauri::command(async)]
+pub fn update_highlight(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    highlight_id: String,
+    edit: HighlightEdit,
+) -> Result<(), LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    highlights::update_highlight(conn, &highlight_id, &edit)
+}
+
+/// Deletes a highlight the user has confirmed deleting (FR-03.3).
+#[tauri::command(async)]
+pub fn delete_highlight(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    highlight_id: String,
+) -> Result<(), LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    highlights::delete_highlight(conn, &highlight_id)
 }
 
 /// The page mode, an app setting shared by all libraries (FR-02.2).
