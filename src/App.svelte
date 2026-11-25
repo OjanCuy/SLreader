@@ -1,10 +1,15 @@
 <script lang="ts">
   // Temporary start screen: proves the Rust bridge (T-02) and the theme and fonts (T-04).
   // Replaced by the S-01 Libraries screen in T-09.
+  // In development it also shows the component gallery (T-05).
   import { getAppInfo } from "./lib/api";
+  import SegmentedControl from "./lib/components/SegmentedControl.svelte";
   import { applyTheme, THEME_OPTIONS, type ThemeChoice } from "./lib/theme";
 
   const info = getAppInfo();
+
+  // Dropped from release builds, because import.meta.env.DEV is false there.
+  const gallery = import.meta.env.DEV ? import("./gallery/Gallery.svelte") : null;
 
   let theme = $state<ThemeChoice>("system");
   $effect(() => applyTheme(theme));
@@ -16,16 +21,14 @@
     <p class="version">{app.version}</p>
   {/await}
 
-  <fieldset>
-    <legend>Appearance</legend>
-    {#each THEME_OPTIONS as option (option.value)}
-      <label>
-        <input type="radio" name="theme" value={option.value} bind:group={theme} />
-        {option.label}
-      </label>
-    {/each}
-  </fieldset>
+  <SegmentedControl label="Appearance" showLabel options={THEME_OPTIONS} bind:value={theme} />
 </main>
+
+{#if gallery}
+  {#await gallery then { default: Gallery }}
+    <Gallery />
+  {/await}
+{/if}
 
 <style>
   main {
@@ -41,26 +44,5 @@
     margin: var(--space-1) 0 var(--space-6);
     color: var(--text-secondary);
     font-variant-numeric: var(--type-numeric);
-  }
-
-  fieldset {
-    display: inline-flex;
-    gap: var(--space-4);
-    margin: 0;
-    padding: var(--panel-padding);
-    border: 1px solid var(--border-control);
-    border-radius: var(--radius-md);
-    background: var(--surface-panel);
-  }
-
-  legend {
-    font: var(--type-section);
-  }
-
-  label {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2);
-    min-height: var(--target-dense);
   }
 </style>

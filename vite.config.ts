@@ -1,9 +1,11 @@
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { svelteTesting } from "@testing-library/svelte/vite";
 import { defineConfig } from "vitest/config";
 
 // Settings for running inside Tauri. See https://tauri.app/start/frontend/vite/
 export default defineConfig({
-  plugins: [svelte()],
+  // svelteTesting() only acts under Vitest: it picks Svelte's browser build.
+  plugins: [svelte(), svelteTesting()],
   // Keep Rust errors visible in the terminal.
   clearScreen: false,
   server: {

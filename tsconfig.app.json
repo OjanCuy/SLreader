@@ -12,6 +12,6 @@
     "moduleDetection": "force"
   },
   "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte"],
-  // This test reads a file from disk with Node, so tsconfig.node.json checks it instead.
-  "exclude": ["src/styles/tokens.test.ts"]
+  // These tests read files from disk with Node, so tsconfig.node.json checks them instead.
+  "exclude": ["src/styles/tokens.test.ts", "src/styles/no-raw-colors.test.ts"]
 }
