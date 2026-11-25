@@ -6,7 +6,7 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
-use super::{DbError, Schema};
+use super::{DbError, LibraryProblem, Schema};
 
 pub const LIBRARY_DB_FILE: &str = "library.sqlite";
 
@@ -34,14 +34,40 @@ pub fn create_library(folder: &Path, name: &str) -> Result<Connection, DbError> 
     Ok(conn)
 }
 
-/// Opens the library in `folder`, migrating it forward if it was made by an older SLReader.
+/// An open library. A read-only one refuses every write at the SQLite level.
+pub struct OpenedLibrary {
+    pub conn: Connection,
+    /// Why it is read-only, or `None` when it can be edited.
+    pub read_only: Option<LibraryProblem>,
+}
+
+/// Opens the library in `folder` (PRD Section 8):
+/// - made by an older SLReader: migrated forward, after a backup copy;
+/// - made by a newer SLReader: opened read-only, never migrated down;
+/// - damaged, or not an SLReader library: `DbError::Damaged` / `NotSlreader`, file untouched.
+///
 /// Never creates a database: a folder without one is `DbError::NotFound`.
-pub fn open_library(folder: &Path) -> Result<Connection, DbError> {
+pub fn open_library(folder: &Path) -> Result<OpenedLibrary, DbError> {
     let path = folder.join(LIBRARY_DB_FILE);
     if !path.is_file() {
         return Err(DbError::NotFound(path));
     }
-    super::open(&path, &LIBRARY_SCHEMA, false)
+
+    // Look first, read-only: nothing is written to a damaged or newer file.
+    let (conn, version) = super::inspect(&path, &LIBRARY_SCHEMA)?;
+    let rows: Result<i64, _> = conn.query_row("SELECT count(*) FROM library", [], |r| r.get(0));
+    match rows {
+        Ok(1) => {}
+        Ok(n) => return Err(DbError::Damaged(format!("{n} rows in the library table"))),
+        Err(e) => return Err(DbError::Damaged(e.to_string())),
+    }
+    if version > LIBRARY_SCHEMA.latest_version() {
+        return Ok(OpenedLibrary { conn, read_only: Some(LibraryProblem::NewerVersion) });
+    }
+    drop(conn);
+
+    let conn = super::open(&path, &LIBRARY_SCHEMA, false)?;
+    Ok(OpenedLibrary { conn, read_only: None })
 }
 
 #[cfg(test)]
@@ -78,7 +104,7 @@ mod tests {
         conn.execute("UPDATE library SET research_questions = 'RQ1\nRQ2'", []).unwrap();
         drop(conn);
 
-        let conn = open_library(dir.path()).unwrap();
+        let conn = open_library(dir.path()).unwrap().conn;
         let (name, rqs): (String, String) = conn
             .query_row("SELECT name, research_questions FROM library", [], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap();
@@ -106,7 +132,7 @@ mod tests {
         drop(conn);
 
         assert!(matches!(create_library(dir.path(), "Other"), Err(DbError::AlreadyExists(_))));
-        assert_eq!(count(&open_library(dir.path()).unwrap(), "paper"), 1);
+        assert_eq!(count(&open_library(dir.path()).unwrap().conn, "paper"), 1);
     }
 
     #[test]
@@ -402,5 +428,128 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(open_library(dir.path()), Err(DbError::NotSlreader)));
+    }
+
+    // ---- T-07: newer versions and damaged databases (PRD Section 8) ----
+
+    /// A library whose schema version is one ahead of this app, as a newer SLReader would leave it.
+    fn newer_library() -> tempfile::TempDir {
+        let (dir, conn) = new_library();
+        add_paper(&conn);
+        conn.execute_batch("ALTER TABLE paper ADD COLUMN from_the_future TEXT;").unwrap();
+        conn.pragma_update(None, "user_version", LIBRARY_SCHEMA.latest_version() + 1).unwrap();
+        drop(conn);
+        dir
+    }
+
+    fn db_bytes(dir: &tempfile::TempDir) -> Vec<u8> {
+        std::fs::read(dir.path().join(LIBRARY_DB_FILE)).unwrap()
+    }
+
+    fn files_in(dir: &tempfile::TempDir) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_current_library_opens_for_editing() {
+        let (dir, conn) = new_library();
+        drop(conn);
+        let opened = open_library(dir.path()).unwrap();
+        assert_eq!(opened.read_only, None);
+        add_paper(&opened.conn);
+    }
+
+    #[test]
+    fn a_newer_library_opens_read_only_and_stays_unchanged() {
+        let dir = newer_library();
+        let before = db_bytes(&dir);
+
+        let opened = open_library(dir.path()).unwrap();
+        assert_eq!(opened.read_only, Some(LibraryProblem::NewerVersion));
+        // Reading works.
+        assert_eq!(count(&opened.conn, "paper"), 1);
+        // Every kind of write is refused.
+        assert!(opened.conn.execute("INSERT INTO paper DEFAULT VALUES", []).is_err());
+        assert!(opened.conn.execute("UPDATE paper SET decision = 'include'", []).is_err());
+        assert!(opened.conn.execute("DELETE FROM paper", []).is_err());
+        assert!(opened.conn.pragma_update(None, "user_version", 1).is_err());
+        drop(opened);
+
+        assert_eq!(db_bytes(&dir), before);
+        // No migration backup and no journal left behind.
+        assert_eq!(files_in(&dir), [LIBRARY_DB_FILE]);
+    }
+
+    fn assert_damaged_and_untouched(dir: &tempfile::TempDir) {
+        let before = db_bytes(dir);
+        let result = open_library(dir.path());
+        let error = result.err().expect("a damaged library must not open");
+        assert_eq!(error.library_problem(), Some(LibraryProblem::Damaged), "{error}");
+        assert_eq!(db_bytes(dir), before);
+        assert_eq!(files_in(dir), [LIBRARY_DB_FILE]);
+    }
+
+    /// A library with enough rows to fill several pages.
+    fn library_with_data() -> tempfile::TempDir {
+        let (dir, conn) = new_library();
+        for i in 0..200 {
+            conn.execute(
+                "INSERT INTO paper (title, assessment_note) VALUES (?1, ?2)",
+                params![format!("Paper {i}"), "note ".repeat(40)],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        dir
+    }
+
+    #[test]
+    fn a_library_with_corrupt_pages_is_damaged() {
+        let dir = library_with_data();
+        let path = dir.path().join(LIBRARY_DB_FILE);
+        let mut bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.len() > 4096 * 4);
+        // Scribble over everything after the first page (the header stays readable).
+        for byte in &mut bytes[4096..] {
+            *byte = 0xA5;
+        }
+        std::fs::write(&path, bytes).unwrap();
+        assert_damaged_and_untouched(&dir);
+    }
+
+    #[test]
+    fn a_truncated_library_is_damaged() {
+        let dir = library_with_data();
+        let path = dir.path().join(LIBRARY_DB_FILE);
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+        assert_damaged_and_untouched(&dir);
+    }
+
+    #[test]
+    fn a_text_file_named_library_sqlite_is_damaged() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LIBRARY_DB_FILE), "hello, this is not a database at all.").unwrap();
+        assert_damaged_and_untouched(&dir);
+    }
+
+    #[test]
+    fn an_empty_library_file_is_damaged() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LIBRARY_DB_FILE), "").unwrap();
+        assert_damaged_and_untouched(&dir);
+    }
+
+    #[test]
+    fn a_library_without_its_library_row_is_damaged() {
+        let (dir, conn) = new_library();
+        conn.execute("DELETE FROM library", []).unwrap();
+        drop(conn);
+        assert_damaged_and_untouched(&dir);
     }
 }

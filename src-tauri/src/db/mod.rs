@@ -9,6 +9,8 @@
 //! - Migrations only go forward. A database from a newer SLReader is never changed.
 //! - Before an existing database is migrated, a copy of it is saved next to it.
 //! - A file that is some other program's SQLite database is never changed.
+//! - `inspect` looks at an existing file read-only first, so a damaged or newer
+//!   database is recognised without writing anything to it (T-07).
 
 pub mod app;
 pub mod library;
@@ -16,7 +18,10 @@ pub mod library;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, ErrorCode, OpenFlags};
+use serde::Serialize;
+
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Everything that can go wrong while opening a database.
 #[derive(Debug)]
@@ -32,6 +37,35 @@ pub enum DbError {
     /// `open_library` found no library database in the folder.
     NotFound(PathBuf),
     InvalidName,
+    /// The file is not a readable SLReader database: corrupt, truncated, or empty.
+    /// The text is for logs only; the UI shows the message from the design brief.
+    Damaged(String),
+}
+
+/// A problem the UI explains with a fixed message (Brief Section 7, S-01).
+/// Sent to the UI as snake_case text, e.g. "newer_version".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibraryProblem {
+    /// Opened read-only: "Created with a newer SLReader. Update the app to edit this library."
+    NewerVersion,
+    /// Not opened: "This library's database is damaged." + "Restore from backup".
+    Damaged,
+    /// "Folder not found." + "Locate folder" (FR-14.5).
+    NotFound,
+}
+
+impl DbError {
+    /// The fixed-message problem behind this error, if there is one.
+    /// Other errors (disk full, file locked, ...) are not called damage.
+    pub fn library_problem(&self) -> Option<LibraryProblem> {
+        match self {
+            DbError::Damaged(_) | DbError::NotSlreader => Some(LibraryProblem::Damaged),
+            DbError::NewerVersion { .. } => Some(LibraryProblem::NewerVersion),
+            DbError::NotFound(_) => Some(LibraryProblem::NotFound),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for DbError {
@@ -47,6 +81,7 @@ impl fmt::Display for DbError {
             DbError::AlreadyExists(path) => write!(f, "a library already exists at {}", path.display()),
             DbError::NotFound(path) => write!(f, "no library found at {}", path.display()),
             DbError::InvalidName => write!(f, "the library name is empty"),
+            DbError::Damaged(detail) => write!(f, "the database is damaged: {detail}"),
         }
     }
 }
@@ -55,7 +90,7 @@ impl std::error::Error for DbError {}
 
 impl From<rusqlite::Error> for DbError {
     fn from(e: rusqlite::Error) -> Self {
-        DbError::Sqlite(e)
+        if is_damage(&e) { DbError::Damaged(e.to_string()) } else { DbError::Sqlite(e) }
     }
 }
 
@@ -63,6 +98,12 @@ impl From<std::io::Error> for DbError {
     fn from(e: std::io::Error) -> Self {
         DbError::Io(e)
     }
+}
+
+/// True for SQLite errors that mean the file itself is broken.
+/// "Busy", "locked", "read-only", "disk full" and the like are not damage.
+fn is_damage(e: &rusqlite::Error) -> bool {
+    matches!(e.sqlite_error_code(), Some(ErrorCode::NotADatabase | ErrorCode::DatabaseCorrupt))
 }
 
 /// The migrations of one kind of database.
@@ -89,9 +130,43 @@ pub(crate) fn open(path: &Path, schema: &Schema, create: bool) -> Result<Connect
     let mut conn = Connection::open_with_flags(path, flags)?;
     // Foreign keys are off by default in SQLite and must be turned on for every connection.
     conn.pragma_update(None, "foreign_keys", true)?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
     migrate(&mut conn, path, schema)?;
     Ok(conn)
+}
+
+/// Opens an existing database read-only and checks it without writing anything.
+/// Returns the read-only connection and the file's schema version, which may be
+/// newer than this app knows. Errors: `NotSlreader`, `Damaged`, or a plain I/O or
+/// SQLite error (e.g. the file is locked).
+pub(crate) fn inspect(path: &Path, schema: &Schema) -> Result<(Connection, i64), DbError> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = Connection::open_with_flags(path, flags)?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    // A second guard on top of the read-only flag.
+    conn.pragma_update(None, "query_only", true)?;
+
+    let application_id: i32 = conn.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if application_id != schema.application_id {
+        let has_tables: bool =
+            conn.query_row("SELECT count(*) > 0 FROM sqlite_schema", [], |row| row.get(0))?;
+        // An empty file has no id yet; the caller decides whether that is acceptable.
+        if application_id != 0 || has_tables {
+            return Err(DbError::NotSlreader);
+        }
+    }
+
+    // quick_check reads every page and returns "ok" or a list of problems.
+    let mut stmt = conn.prepare("PRAGMA quick_check")?;
+    let problems: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<_, _>>()?;
+    drop(stmt);
+    if problems != ["ok"] {
+        return Err(DbError::Damaged(problems.join("; ")));
+    }
+    Ok((conn, version))
 }
 
 fn migrate(conn: &mut Connection, path: &Path, schema: &Schema) -> Result<(), DbError> {
@@ -258,6 +333,42 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("x.sqlite");
         std::fs::write(&path, "this is not a database, just some text that is long enough").unwrap();
-        assert!(matches!(open(&path, &ONE, false), Err(DbError::Sqlite(_))));
+        assert!(matches!(open(&path, &ONE, false), Err(DbError::Damaged(_))));
+    }
+
+    fn sqlite_error(code: i32) -> rusqlite::Error {
+        rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None)
+    }
+
+    #[test]
+    fn only_broken_files_count_as_damage() {
+        use rusqlite::ffi;
+        assert!(is_damage(&sqlite_error(ffi::SQLITE_CORRUPT)));
+        assert!(is_damage(&sqlite_error(ffi::SQLITE_NOTADB)));
+        for code in [
+            ffi::SQLITE_BUSY,
+            ffi::SQLITE_LOCKED,
+            ffi::SQLITE_FULL,
+            ffi::SQLITE_READONLY,
+            ffi::SQLITE_CANTOPEN,
+            ffi::SQLITE_IOERR,
+        ] {
+            assert!(!is_damage(&sqlite_error(code)), "code {code} is not damage");
+        }
+    }
+
+    #[test]
+    fn problems_map_to_the_fixed_messages() {
+        assert_eq!(DbError::Damaged("x".into()).library_problem(), Some(LibraryProblem::Damaged));
+        assert_eq!(DbError::NotSlreader.library_problem(), Some(LibraryProblem::Damaged));
+        assert_eq!(
+            DbError::NewerVersion { found: 2, supported: 1 }.library_problem(),
+            Some(LibraryProblem::NewerVersion)
+        );
+        assert_eq!(DbError::NotFound(PathBuf::new()).library_problem(), Some(LibraryProblem::NotFound));
+        let busy = DbError::Sqlite(sqlite_error(rusqlite::ffi::SQLITE_BUSY));
+        assert_eq!(busy.library_problem(), None);
+        assert_eq!(serde_json::to_value(LibraryProblem::NewerVersion).unwrap(), "newer_version");
+        assert_eq!(serde_json::to_value(LibraryProblem::NotFound).unwrap(), "not_found");
     }
 }
