@@ -12,6 +12,7 @@ const mocked = vi.mocked(api);
 
 const UNDECIDED: api.Screening = { decision: "undecided", exclusionReasonId: null, assessmentNote: "" };
 const REASONS: api.ExclusionReason[] = [{ id: "r3", code: "E3", label: "Wrong population" }];
+const EMPTY: api.Metadata = { refNo: null, title: "", year: null, sourceDatabase: "", doi: "" };
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -20,6 +21,8 @@ beforeEach(() => {
   mocked.setDecision.mockResolvedValue();
   mocked.setExclusionReason.mockResolvedValue();
   mocked.setAssessmentNote.mockResolvedValue();
+  mocked.getMetadata.mockResolvedValue({ metadata: EMPTY, sameRefNo: [] });
+  mocked.setMetadata.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -31,8 +34,8 @@ afterEach(() => {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-async function show(readOnly = false) {
-  const store = createDecisionStore();
+async function show(readOnly = false, listeners: Parameters<typeof createDecisionStore>[0] = {}) {
+  const store = createDecisionStore(listeners);
   const ondelete = vi.fn();
   render(DecisionPanel, { store, name: "kim-2021.pdf", readOnly, ondelete });
   await store.open(7, "p1");
@@ -227,5 +230,108 @@ describe("the Decision tab (FR-04.1 to FR-04.4)", () => {
     late({ ...UNDECIDED, decision: "include" });
     await first;
     expect(store.screening?.decision).toBe("undecided");
+  });
+});
+
+describe("metadata (FR-05.1, FR-05.4)", () => {
+  const field = (label: string) => screen.getByLabelText(label) as HTMLInputElement;
+  const enter = (label: string, value: string) => fireEvent.input(field(label), { target: { value } });
+  const leave = async (label: string) => {
+    await fireEvent.blur(field(label));
+    await tick();
+  };
+
+  it("shows the stored values", async () => {
+    mocked.getMetadata.mockResolvedValue({
+      metadata: { refNo: 46, title: "Tilapia", year: 2021, sourceDatabase: "Scopus", doi: "10.1/x" },
+      sameRefNo: [],
+    });
+    await show();
+    expect(["Reference No", "Year", "Title", "Source database", "DOI"].map((l) => field(l).value)).toEqual([
+      "46",
+      "2021",
+      "Tilapia",
+      "Scopus",
+      "10.1/x",
+    ]);
+  });
+
+  it("saves all fields together, without touching the decision", async () => {
+    const onmetadatasaved = vi.fn();
+    await show(false, { onmetadatasaved });
+    await enter("Title", "Tilapia");
+    await enter("Source database", "Scopus");
+    await leave("Source database");
+    expect(mocked.setMetadata).toHaveBeenCalledExactlyOnceWith(7, "p1", {
+      ...EMPTY,
+      title: "Tilapia",
+      sourceDatabase: "Scopus",
+    });
+    expect(screen.getByText("Saved")).toBeTruthy();
+    expect(onmetadatasaved).toHaveBeenCalledTimes(1);
+    expect(mocked.setDecision).not.toHaveBeenCalled();
+    expect(mocked.setAssessmentNote).not.toHaveBeenCalled();
+  });
+
+  it("takes only digits as reference number and year", async () => {
+    await show();
+    await enter("Reference No", "#4a6");
+    expect(field("Reference No").value).toBe("46");
+    await enter("Year", "20215");
+    expect(field("Year").value).toBe("2021");
+    await leave("Year");
+    expect(mocked.setMetadata).toHaveBeenLastCalledWith(7, "p1", expect.objectContaining({ refNo: 46, year: 2021 }));
+    await enter("Reference No", "");
+    await leave("Reference No");
+    expect(mocked.setMetadata).toHaveBeenLastCalledWith(7, "p1", expect.objectContaining({ refNo: null }));
+  });
+
+  it("keeps a title on one line", async () => {
+    await show();
+    await enter("Title", "Tilapia\r\nin ponds");
+    expect(field("Title").value).toBe("Tilapia in ponds");
+  });
+
+  it("warns about a reference number used twice, and still saves it", async () => {
+    mocked.setMetadata.mockResolvedValue(["kim-2021.pdf"]);
+    await show();
+    await enter("Reference No", "46");
+    expect(screen.queryByText(/also used by/)).toBeNull();
+    await leave("Reference No");
+    expect(screen.getByText("Reference No 46 is also used by kim-2021.pdf.")).toBeTruthy();
+    expect(mocked.setMetadata).toHaveBeenCalledOnce();
+    // The warning goes while another number is typed.
+    await enter("Reference No", "47");
+    expect(screen.queryByText(/also used by/)).toBeNull();
+  });
+
+  it("names how many more papers use the number", async () => {
+    mocked.getMetadata.mockResolvedValue({
+      metadata: { ...EMPTY, refNo: 46 },
+      sameRefNo: ["kim-2021.pdf", "b.pdf", "c.pdf"],
+    });
+    await show();
+    expect(screen.getByText("Reference No 46 is also used by kim-2021.pdf and 2 more.")).toBeTruthy();
+  });
+
+  it("saves what was typed for the right paper, and keeps it when saving fails", async () => {
+    const { store } = await show();
+    mocked.setMetadata.mockRejectedValue(new Error("disk full"));
+    await enter("DOI", "10.1/kept");
+    await store.open(7, "p2");
+    await tick();
+    expect(mocked.setMetadata).toHaveBeenLastCalledWith(7, "p1", expect.objectContaining({ doi: "10.1/kept" }));
+    expect(field("DOI").value).toBe("");
+    expect(screen.getByRole("alert").textContent).toContain(SAVE_ERROR);
+    await store.open(7, "p1");
+    await tick();
+    expect(field("DOI").value).toBe("10.1/kept");
+  });
+
+  it("changes nothing in a read-only library", async () => {
+    await show(true);
+    for (const label of ["Reference No", "Year", "Title", "Source database", "DOI"]) {
+      expect(field(label).readOnly).toBe(true);
+    }
   });
 });

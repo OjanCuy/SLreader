@@ -56,7 +56,10 @@
   const selectedPaper = $derived(papers?.find((paper) => paper.id === selected));
   /** Shared by the reader and the Highlights tab. */
   const highlights = createHighlightStore();
-  const decisions = createDecisionStore({ onsaved: () => refreshSummary() });
+  const decisions = createDecisionStore({
+    onsaved: () => refreshSummary(),
+    onmetadatasaved: () => refresh(),
+  });
   /** The counts in the top bar (FR-04.5). */
   let summary = $state.raw<Summary | null>(null);
   let summaryRequest = 0;

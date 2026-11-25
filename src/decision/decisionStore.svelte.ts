@@ -1,4 +1,5 @@
-// The screening of the open paper (FR-04.1 to FR-04.4). One store per opened library.
+// The Decision tab of the open paper: screening (FR-04.1 to FR-04.4) and metadata
+// (FR-05.1, FR-05.4). One store per opened library.
 //
 // A change shows on screen at once and is then saved. A change that cannot be saved
 // stays on screen with "Try again" (PRD Section 8), also after switching papers.
@@ -6,36 +7,52 @@
 // decision (FR-11.4).
 
 import {
+  getMetadata,
   getScreening,
   listExclusionReasons,
   setAssessmentNote,
   setDecision,
   setExclusionReason,
+  setMetadata,
   type Decision,
   type ExclusionReason,
+  type Metadata,
   type Screening,
 } from "../lib/api";
 import { showToast } from "../lib/components/toasts.svelte";
 import { SAVE_ERROR } from "../lib/libraryTexts";
 
-/** A note is saved this long after the last key press, and when its field is left. */
+/** Typed text is saved this long after the last key press, and when its field is left. */
 export const NOTE_SAVE_DELAY_MS = 600;
+
+type Changes = Partial<Screening> & { metadata?: Metadata };
 
 interface Unsaved {
   session: number;
-  changes: Partial<Screening>;
+  changes: Changes;
 }
 
 export type DecisionStore = ReturnType<typeof createDecisionStore>;
 
-/** `onsaved` runs after a decision or reason was saved: the counts have changed. */
-export function createDecisionStore({ onsaved }: { onsaved?: () => void } = {}) {
+interface Listeners {
+  /** A decision or reason was saved: the counts have changed. */
+  onsaved?: () => void;
+  /** Metadata was saved: the paper list may show another title. */
+  onmetadatasaved?: () => void;
+}
+
+export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}) {
   let paperId = $state<string | null>(null);
   let status = $state<"loading" | "ready" | "error">("loading");
   let screening = $state.raw<Screening | null>(null);
   let reasons = $state.raw<ExclusionReason[]>([]);
   /** The note of the open paper has just been saved ("Saved"). */
   let noteSaved = $state(false);
+  let metadata = $state.raw<Metadata | null>(null);
+  /** The metadata of the open paper has just been saved ("Saved"). */
+  let metadataSaved = $state(false);
+  /** Other papers with the open paper's reference number (FR-05.4). */
+  let sameRefNo = $state.raw<string[]>([]);
   /** Papers with a change that could not be saved. */
   let failed = $state.raw<ReadonlySet<string>>(new Set<string>());
 
@@ -55,6 +72,9 @@ export function createDecisionStore({ onsaved }: { onsaved?: () => void } = {}) 
     status = "loading";
     screening = null;
     noteSaved = false;
+    metadata = null;
+    metadataSaved = false;
+    sameRefNo = [];
   }
 
   /** Loads a paper's screening. Never rejects: a failure shows in `status`. */
@@ -65,15 +85,20 @@ export function createDecisionStore({ onsaved }: { onsaved?: () => void } = {}) 
     try {
       // So that what is read includes the changes still being saved.
       await Promise.all(saving.values());
-      const [stored, choices] = await Promise.all([
+      const [stored, choices, described] = await Promise.all([
         getScreening(ofSession, id),
         listExclusionReasons(ofSession),
+        getMetadata(ofSession, id),
       ]);
       if (mine !== generation) return;
-      if (!stored) throw new Error("no screening");
+      if (!stored || !described) throw new Error("nothing stored");
       reasons = choices ?? [];
       // Changes that could not be saved stay on screen.
-      screening = { ...stored, ...unsaved.get(id)?.changes };
+      const { metadata: unsavedMetadata, ...unsavedScreening } = unsaved.get(id)?.changes ?? {};
+      screening = { ...stored, ...unsavedScreening };
+      metadata = unsavedMetadata ?? described.metadata;
+      // The warning belongs to the stored number only.
+      sameRefNo = metadata.refNo === described.metadata.refNo ? described.sameRefNo : [];
       status = "ready";
     } catch (failure) {
       console.error("The decision could not be read", failure);
@@ -82,9 +107,11 @@ export function createDecisionStore({ onsaved }: { onsaved?: () => void } = {}) 
   }
 
   /** Changes the open paper on screen and notes what has to be saved. */
-  function change(changes: Partial<Screening>): string | null {
-    if (paperId === null || !screening) return null;
-    screening = { ...screening, ...changes };
+  function change(changes: Changes): string | null {
+    if (paperId === null || !screening || !metadata) return null;
+    const { metadata: newMetadata, ...screened } = changes;
+    screening = { ...screening, ...screened };
+    if (newMetadata) metadata = newMetadata;
     const entry = unsaved.get(paperId) ?? { session, changes: {} };
     Object.assign(entry.changes, changes);
     unsaved.set(paperId, entry);
@@ -108,6 +135,21 @@ export function createDecisionStore({ onsaved }: { onsaved?: () => void } = {}) 
     const id = change({ assessmentNote });
     if (id === null) return;
     noteSaved = false;
+    saveSoon(id);
+  }
+
+  /** Reference number, title, year, source database, or DOI: saved shortly after typing. */
+  function editMetadata(patch: Partial<Metadata>): void {
+    if (!metadata) return;
+    const refNoChanged = "refNo" in patch && patch.refNo !== metadata.refNo;
+    const id = change({ metadata: { ...metadata, ...patch } });
+    if (id === null) return;
+    metadataSaved = false;
+    if (refNoChanged) sameRefNo = [];
+    saveSoon(id);
+  }
+
+  function saveSoon(id: string) {
     clearTimeout(timers.get(id));
     timers.set(id, setTimeout(() => save(id), NOTE_SAVE_DELAY_MS));
   }
@@ -126,7 +168,7 @@ export function createDecisionStore({ onsaved }: { onsaved?: () => void } = {}) 
     const { changes } = entry;
     try {
       // Each value is forgotten only if it was not changed again meanwhile.
-      const { decision, exclusionReasonId, assessmentNote } = changes;
+      const { decision, exclusionReasonId, assessmentNote, metadata: described } = changes;
       if (decision !== undefined) {
         await setDecision(entry.session, id, decision);
         if (changes.decision === decision) delete changes.decision;
@@ -143,6 +185,17 @@ export function createDecisionStore({ onsaved }: { onsaved?: () => void } = {}) 
           delete changes.assessmentNote;
           if (paperId === id) noteSaved = true;
         }
+      }
+      if (described !== undefined) {
+        const others = await setMetadata(entry.session, id, described);
+        if (changes.metadata === described) {
+          delete changes.metadata;
+          if (paperId === id) {
+            metadataSaved = true;
+            sameRefNo = others ?? [];
+          }
+        }
+        onmetadatasaved?.();
       }
       if (Object.keys(changes).length === 0 && unsaved.get(id) === entry) unsaved.delete(id);
       setFailed(id, false);
@@ -204,6 +257,15 @@ export function createDecisionStore({ onsaved }: { onsaved?: () => void } = {}) 
     get noteSaved() {
       return noteSaved;
     },
+    get metadata() {
+      return metadata;
+    },
+    get metadataSaved() {
+      return metadataSaved;
+    },
+    get sameRefNo() {
+      return sameRefNo;
+    },
     /** A change, of this or an earlier paper, could not be saved. */
     get saveFailed() {
       return failed.size > 0;
@@ -213,6 +275,7 @@ export function createDecisionStore({ onsaved }: { onsaved?: () => void } = {}) 
     decide,
     chooseReason,
     editNote,
+    editMetadata,
     flush,
     retry,
     forget,

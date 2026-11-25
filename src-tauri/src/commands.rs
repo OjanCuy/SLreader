@@ -11,6 +11,7 @@ use crate::decisions::{self, Decision, ExclusionReason, Screening, Summary};
 use crate::extraction::Extraction;
 use crate::highlights::{self, ExtractionTag, Highlight, HighlightCategory, HighlightEdit, NewHighlight};
 use crate::libraries::{self, LibraryError, LibrarySummary};
+use crate::metadata::{self, Metadata, PaperMetadata};
 use crate::papers::{self, ImportOutcome, ImportReport, PaperListItem};
 use crate::settings::{self, PageMode};
 use crate::{AppDb, CurrentLibrary};
@@ -400,6 +401,32 @@ pub fn list_exclusion_reasons(
     let current = lock(&current.0);
     let conn = libraries::library_for_reading(&current, session)?;
     decisions::list_reasons(conn)
+}
+
+/// The metadata of a paper (FR-05.1).
+#[tauri::command(async)]
+pub fn get_metadata(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paper_id: String,
+) -> Result<PaperMetadata, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_reading(&current, session)?;
+    metadata::get_metadata(conn, &paper_id)
+}
+
+/// Saves a paper's metadata; returns the other papers with the same reference number
+/// (FR-05.4).
+#[tauri::command(async)]
+pub fn set_metadata(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paper_id: String,
+    metadata: Metadata,
+) -> Result<Vec<String>, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    metadata::set_metadata(conn, &paper_id, &metadata)
 }
 
 /// The page mode, an app setting shared by all libraries (FR-02.2).

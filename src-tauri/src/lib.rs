@@ -4,6 +4,7 @@ pub mod decisions;
 pub mod extraction;
 pub mod highlights;
 pub mod libraries;
+pub mod metadata;
 pub mod papers;
 pub mod settings;
 pub mod sync;
@@ -94,6 +95,8 @@ pub fn run() {
             commands::set_assessment_note,
             commands::list_exclusion_reasons,
             commands::get_summary,
+            commands::get_metadata,
+            commands::set_metadata,
             commands::delete_paper,
             commands::get_last_page,
             commands::save_last_page,

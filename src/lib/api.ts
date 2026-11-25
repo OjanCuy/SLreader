@@ -323,6 +323,32 @@ export function getSummary(session: number): Promise<Summary> {
   return invoke("get_summary", { session });
 }
 
+// ---- Metadata (FR-05.1, FR-05.4). Types mirror src-tauri/src/metadata.rs. ----
+
+export interface Metadata {
+  refNo: number | null;
+  title: string;
+  year: number | null;
+  /** Empty when not filled in, like `doi`. */
+  sourceDatabase: string;
+  doi: string;
+}
+
+export interface PaperMetadata {
+  metadata: Metadata;
+  /** Other papers with the same reference number: their file name, or title. */
+  sameRefNo: string[];
+}
+
+export function getMetadata(session: number, paperId: string): Promise<PaperMetadata> {
+  return invoke("get_metadata", { session, paperId });
+}
+
+/** Saves all fields; resolves to the other papers with the same reference number. */
+export function setMetadata(session: number, paperId: string, metadata: Metadata): Promise<string[]> {
+  return invoke("set_metadata", { session, paperId, metadata });
+}
+
 /** Shows the system file picker for one PDF. Null when the user cancels. */
 export function pickPdf(): Promise<string | null> {
   return invoke("pick_pdf");

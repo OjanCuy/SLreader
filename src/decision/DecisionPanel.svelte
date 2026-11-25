@@ -1,8 +1,8 @@
 <!--
-  S-02 Tab Decision (FR-04.1 to FR-04.4; Brief Sections 6 and 7): file name, decision,
-  exclusion reason (only while excluded), assessment note, and "Delete paper" at the
-  bottom. Text approved in T-22. Metadata (T-24), references (T-26), [#n] links (T-27)
-  and AI suggestions (T-46) are added later.
+  S-02 Tab Decision (FR-04.1 to FR-04.4, FR-05.1; Brief Sections 6 and 7): file name,
+  metadata, decision, exclusion reason (only while excluded), assessment note, and
+  "Delete paper" at the bottom. Text approved in T-22 and T-24. References (T-26),
+  [#n] links (T-27) and AI suggestions (T-46) are added later.
 -->
 <script lang="ts">
   import Button from "../lib/components/Button.svelte";
@@ -13,6 +13,7 @@
   import { GENERIC_ERROR, SAVE_ERROR } from "../lib/libraryTexts";
   import DecisionControl from "./DecisionControl.svelte";
   import type { DecisionStore } from "./decisionStore.svelte";
+  import MetadataForm from "./MetadataForm.svelte";
 
   interface Props {
     store: DecisionStore;
@@ -44,8 +45,17 @@
 
   {#if store.status === "error"}
     <p class="problem" role="alert"><Icon name="error" />{GENERIC_ERROR}</p>
-  {:else if store.status === "ready" && store.screening}
+  {:else if store.status === "ready" && store.screening && store.metadata}
     {#key store.paperId}
+      <MetadataForm
+        metadata={store.metadata}
+        sameRefNo={store.sameRefNo}
+        saved={store.metadataSaved}
+        {readOnly}
+        onchange={(patch) => store.editMetadata(patch)}
+        ondone={() => store.flush()}
+      />
+
       <DecisionControl
         value={store.screening.decision}
         disabled={readOnly}

@@ -33,6 +33,11 @@ beforeEach(() => {
     assessmentNote: "",
   }));
   mocked.setDecision.mockResolvedValue();
+  mocked.getMetadata.mockResolvedValue({
+    metadata: { refNo: null, title: "", year: null, sourceDatabase: "", doi: "" },
+    sameRefNo: [],
+  });
+  mocked.setMetadata.mockResolvedValue([]);
 });
 
 afterEach(cleanup);
@@ -119,6 +124,16 @@ describe("the paper's tabs (Brief Section 6, S-02)", () => {
     await vi.waitFor(() => expect(chips()).toContain("E3, Wrong population 1"));
     expect(chips()).toContain("No reason 0");
     expect(mocked.getSummary).toHaveBeenLastCalledWith(7);
+  });
+
+  it("shows a new title in the paper list once it is saved", async () => {
+    show();
+    await open("a.pdf");
+    const title = await screen.findByLabelText("Title");
+    mocked.listPapers.mockResolvedValue([{ ...paper("1", "a.pdf"), title: "Tilapia ponds" }, paper("2", "b.pdf")]);
+    await fireEvent.input(title, { target: { value: "Tilapia ponds" } });
+    await fireEvent.blur(title);
+    expect(await screen.findByRole("button", { name: "Tilapia ponds" })).toBeTruthy();
   });
 
   it("shows no numbers rather than wrong ones when they cannot be read", async () => {
