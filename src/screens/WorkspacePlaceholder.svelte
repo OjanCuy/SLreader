@@ -1,5 +1,6 @@
 <!--
-  Temporary: the open library with its papers, under the start of the S-02 top bar.
+  Temporary: the open library with its paper list on the left and the reader (T-16)
+  in the middle, under the start of the S-02 top bar.
   The real Workspace layout comes with T-38.
   App.svelte mounts it again for every opened library, so no state carries over.
 -->
@@ -22,6 +23,7 @@
   import { ADD_ANYWAY, identicalMessage, importMessages, SKIP } from "../lib/importTexts";
   import { LIBRARY_PROBLEMS } from "../lib/libraryProblems";
   import { CLOUD_WARNING, libraryErrorMessage, libraryTitle } from "../lib/libraryTexts";
+  import Reader from "../reader/Reader.svelte";
   import DropZone from "./DropZone.svelte";
   import LibrarySwitcher from "./LibrarySwitcher.svelte";
 
@@ -39,6 +41,8 @@
 
   let papers = $state<PaperListItem[] | null>(null);
   let importing = $state(false);
+  /** The paper open in the reader. */
+  let selected = $state<string | null>(null);
 
   /** Open "Add anyway / Skip" questions; they belong to this library only. */
   const questions: number[] = [];
@@ -124,51 +128,95 @@
   </Button>
 {/snippet}
 
-<header>
-  <LibrarySwitcher current={library} {onswitch} {onshowall} />
-  <div class="actions">{@render uploadButton()}</div>
-</header>
+<div class="workspace">
+  <header>
+    <LibrarySwitcher current={library} {onswitch} {onshowall} />
+    <div class="actions">{@render uploadButton()}</div>
+  </header>
 
-<main>
-  <h1>{libraryTitle(library)}</h1>
-  {#if problem?.readOnly}
-    <InlineBanner tone="warning" title={problem.message} />
-  {/if}
-  {#if library.cloudSynced}
-    <InlineBanner tone="warning" title={CLOUD_WARNING} />
-  {/if}
+  <div class="body">
+    <nav aria-label="Papers">
+      <h1>{libraryTitle(library)}</h1>
+      {#if problem?.readOnly}
+        <InlineBanner tone="warning" title={problem.message} />
+      {/if}
+      {#if library.cloudSynced}
+        <InlineBanner tone="warning" title={CLOUD_WARNING} />
+      {/if}
 
-  {#if papers === null}
-    <!-- Loading: the list is short and local, so nothing is shown meanwhile. -->
-  {:else if papers.length === 0}
-    <EmptyState title="No papers yet.">
-      {#snippet action()}
-        <div class="empty-action">
-          {@render uploadButton()}
-          {#if !problem?.readOnly}<span>or drop PDF files here</span>{/if}
-        </div>
-      {/snippet}
-    </EmptyState>
-  {:else}
-    <ul aria-label="Papers">
-      {#each papers as paper (paper.id)}
-        <li>
-          <span class="name">{paper.title || paper.fileName}</span>
-          {#if paper.extracting}
-            <div class="extracting"><ProgressBar label="Extracting text…" indeterminate /></div>
-          {/if}
-          {#if paper.fileMissing}
-            <span class="missing"><Icon name="error" />PDF file is missing.</span>
-          {/if}
-        </li>
-      {/each}
-    </ul>
-  {/if}
-</main>
+      {#if papers !== null && papers.length > 0}
+        <ul>
+          {#each papers as paper (paper.id)}
+            <li class:selected={paper.id === selected}>
+              <button
+                class="name"
+                aria-current={paper.id === selected ? "true" : undefined}
+                onclick={() => (selected = paper.id)}
+              >
+                {paper.title || paper.fileName}
+              </button>
+              {#if paper.extracting}
+                <ProgressBar label="Extracting text…" indeterminate />
+              {/if}
+              {#if paper.fileMissing}
+                <span class="missing"><Icon name="error" />PDF file is missing.</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </nav>
+
+    <main>
+      {#if papers === null}
+        <!-- Loading: the list is short and local, so nothing is shown meanwhile. -->
+      {:else if papers.length === 0}
+        <EmptyState title="No papers yet.">
+          {#snippet action()}
+            <div class="empty-action">
+              {@render uploadButton()}
+              {#if !problem?.readOnly}<span>or drop PDF files here</span>{/if}
+            </div>
+          {/snippet}
+        </EmptyState>
+      {:else}
+        <Reader {session} paperId={selected} readOnly={problem?.readOnly ?? false} onattached={refresh} />
+      {/if}
+    </main>
+  </div>
+</div>
 
 <DropZone ondrop={importPaths} />
 
 <style>
+  .workspace {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100vh;
+  }
+
+  .body {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr);
+    min-height: 0;
+  }
+
+  nav {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-height: 0;
+    padding: var(--space-4) var(--panel-padding);
+    overflow-y: auto;
+    border-right: 1px solid var(--border-subtle);
+    background: var(--surface-panel);
+  }
+
+  main {
+    min-width: 0;
+    min-height: 0;
+  }
+
   header {
     display: flex;
     align-items: center;
@@ -178,18 +226,10 @@
     border-bottom: 1px solid var(--border-subtle);
   }
 
-  main {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-    max-width: 720px;
-    margin: 0 auto;
-    padding: var(--space-6) var(--panel-padding);
-  }
-
   h1 {
     margin: 0;
     font: var(--type-display);
+    overflow-wrap: anywhere;
   }
 
   .empty-action {
@@ -211,21 +251,34 @@
 
   li {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-2);
-    padding: var(--space-2) 0;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-1) var(--space-2);
     border-bottom: 1px solid var(--border-subtle);
   }
 
-  .name {
-    font: var(--type-paper-list);
-    overflow-wrap: anywhere;
+  li.selected {
+    background: var(--accent-subtle);
   }
 
-  .extracting {
-    width: 160px;
+  .name {
+    padding: var(--space-1);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-primary);
+    font: var(--type-paper-list);
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+
+  .name:hover {
+    text-decoration: underline;
+  }
+
+  .name:focus-visible {
+    outline: var(--focus-ring-width) solid var(--focus-ring);
   }
 
   .missing {

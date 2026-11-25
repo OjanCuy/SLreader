@@ -140,6 +140,29 @@ export function listPapers(session: number): Promise<PaperListItem[]> {
   return invoke("list_papers", { session });
 }
 
+// ---- Reader (FR-02.1). ----
+
+/**
+ * The bytes of a paper's PDF. Rejects with code "not_found" when the file is not in
+ * the library folder ("PDF file is missing.").
+ */
+export function readPaperPdf(session: number, paperId: string): Promise<ArrayBuffer> {
+  return invoke("read_paper_pdf", { session, paperId });
+}
+
+/** Shows the system file picker for one PDF. Null when the user cancels. */
+export function pickPdf(): Promise<string | null> {
+  return invoke("pick_pdf");
+}
+
+/**
+ * "Attach PDF": copies a PDF into the library as the file of a paper whose file is
+ * missing. Resolves to "attached", "already_in_library", "not_pdf", or "write_failed".
+ */
+export function attachPdf(session: number, paperId: string, path: string): Promise<ImportOutcome> {
+  return invoke("attach_pdf", { session, paperId, path });
+}
+
 export type FileDrag =
   | { type: "enter"; paths: string[] }
   | { type: "drop"; paths: string[] }

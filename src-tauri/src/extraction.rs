@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use crate::db::library::open_library;
+use crate::papers::pdf_location;
 use crate::text::{extract_pages, load_pdfium, save_text};
 
 /// Called after each paper with the session it belongs to.
@@ -120,8 +121,9 @@ fn work(shared: &Shared, pdfium: &pdfium_render::prelude::Pdfium, target: &Targe
         let Some((paper_id, file_path)) = next else { return };
 
         let saved = file_path
+            .and_then(|stored| pdf_location(&target.folder, &stored))
             .ok_or(())
-            .and_then(|path| extract_pages(pdfium, &target.folder.join(path)).map_err(|_| ()))
+            .and_then(|path| extract_pages(pdfium, &path).map_err(|_| ()))
             .and_then(|pages| save_text(&mut conn, &paper_id, &pages).map_err(|_| ()));
         if saved.is_err() {
             lock(&shared.state).failed.insert(paper_id);

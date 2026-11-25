@@ -9,11 +9,11 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
 use crate::db::library::MAX_PAPERS;
-use crate::libraries::{LibraryError, PDF_FOLDER};
+use crate::libraries::{ErrorCode, LibraryError, PDF_FOLDER};
 
 /// What happened to one file of an import.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -318,6 +318,100 @@ fn same_name(a: &str, b: &str) -> bool {
     a.to_lowercase() == b.to_lowercase()
 }
 
+/// Where a paper's PDF is, for a stored path such as "pdfs/kim.pdf". A path that
+/// points anywhere else (e.g. "../x" in a damaged or edited database) gives `None`,
+/// so no file outside `pdfs/` is ever read or written for a paper.
+pub fn pdf_location(folder: &Path, stored: &str) -> Option<PathBuf> {
+    let (first, name) = stored.split_once('/')?;
+    let plain = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\', ':'])
+        && !name.ends_with(['.', ' ']);
+    (first == PDF_FOLDER && plain).then(|| folder.join(PDF_FOLDER).join(name))
+}
+
+fn unknown_paper(paper_id: &str) -> LibraryError {
+    LibraryError::new(ErrorCode::Other, format!("no paper with id {paper_id}"))
+}
+
+/// The file the reader opens for a paper (FR-02.1). `NotFound` when the paper has no
+/// file in the library folder: the reader shows "PDF file is missing.".
+pub fn pdf_path(conn: &Connection, folder: &Path, paper_id: &str) -> Result<PathBuf, LibraryError> {
+    let stored: Option<String> = conn
+        .query_row("SELECT file_path FROM paper WHERE id = ?1", [paper_id], |r| r.get(0))
+        .optional()?
+        .ok_or_else(|| unknown_paper(paper_id))?;
+    stored
+        .as_deref()
+        .and_then(|stored| pdf_location(folder, stored))
+        .filter(|path| path.is_file())
+        .ok_or_else(|| LibraryError::new(ErrorCode::NotFound, "the paper has no PDF file"))
+}
+
+/// Reads a PDF found by `pdf_path`. Called without holding the library lock.
+pub fn read_pdf(path: &Path) -> Result<Vec<u8>, LibraryError> {
+    std::fs::read(path).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => LibraryError::new(ErrorCode::NotFound, e.to_string()),
+        _ => e.into(),
+    })
+}
+
+/// "Attach PDF" for a paper whose file is missing (Brief Section 7, S-02 Reader).
+/// Copies `source` into the library as that paper's file and never overwrites a file:
+/// the paper keeps its stored name, so backups and the reference list still match.
+/// A paper without a usable stored name gets the source's name, made unique.
+///
+/// Outcomes: `Attached`, `AlreadyInLibrary` (the paper has its file after all),
+/// `NotPdf`, or `WriteFailed`. Nothing else about the paper changes.
+pub fn attach_pdf(
+    conn: &Connection,
+    folder: &Path,
+    paper_id: &str,
+    source: &Path,
+) -> Result<ImportOutcome, LibraryError> {
+    let stored: Option<String> = conn
+        .query_row("SELECT file_path FROM paper WHERE id = ?1", [paper_id], |r| r.get(0))
+        .optional()?
+        .ok_or_else(|| unknown_paper(paper_id))?;
+    let target = stored.as_deref().and_then(|stored| pdf_location(folder, stored));
+    if target.as_ref().is_some_and(|path| path.is_file()) {
+        return Ok(ImportOutcome::AlreadyInLibrary);
+    }
+    let Some(file_name) = source.file_name().and_then(|n| n.to_str()) else {
+        return Ok(ImportOutcome::NotPdf);
+    };
+    if !looks_like_pdf(source) {
+        return Ok(ImportOutcome::NotPdf);
+    }
+
+    if let Some(target) = target {
+        let copied = std::fs::create_dir_all(folder.join(PDF_FOLDER)).and_then(|()| copy_new(source, &target));
+        return Ok(match copied {
+            Ok(()) => ImportOutcome::Attached,
+            Err(_) => ImportOutcome::WriteFailed,
+        });
+    }
+
+    // No usable name: store it like an import, beside the other papers' files.
+    let known: Vec<(String, String)> = conn
+        .prepare("SELECT id, file_path FROM paper WHERE file_path IS NOT NULL AND id <> ?1")?
+        .query_map([paper_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+    let Ok(placed) = place_file(folder, source, file_name, &known) else {
+        return Ok(ImportOutcome::WriteFailed);
+    };
+    match conn.execute("UPDATE paper SET file_path = ?1 WHERE id = ?2", params![placed.relative, paper_id]) {
+        Ok(1) => Ok(ImportOutcome::Attached),
+        _ => {
+            if placed.copied {
+                let _ = std::fs::remove_file(folder.join(&placed.relative));
+            }
+            Ok(ImportOutcome::WriteFailed)
+        }
+    }
+}
+
 /// All papers, oldest first. `still_extracting` tells whether a pending paper is
 /// still in the queue of the background extraction.
 pub fn list_papers(
@@ -332,7 +426,9 @@ pub fn list_papers(
     Ok(rows
         .into_iter()
         .map(|(id, file_path, title, text_status)| {
-            let file_missing = file_path.as_ref().is_some_and(|path| !folder.join(path).is_file());
+            let file_missing = file_path
+                .as_ref()
+                .is_some_and(|stored| !pdf_location(folder, stored).is_some_and(|path| path.is_file()));
             PaperListItem {
                 extracting: text_status == "pending" && !file_missing && still_extracting(&id),
                 id,
@@ -652,6 +748,137 @@ mod tests {
         assert_eq!(state, [("pending", true), ("pending", false)]);
         let gave_up = list_papers(&s.conn, &s.library, &|_| false).unwrap();
         assert!(!gave_up[0].extracting);
+    }
+
+    // ---- T-16: the reader's file, and "Attach PDF" ----
+
+    impl Setup {
+        fn id_of(&self, file_path: &str) -> String {
+            self.conn.query_row("SELECT id FROM paper WHERE file_path = ?1", [file_path], |r| r.get(0)).unwrap()
+        }
+
+        fn file_path_of(&self, id: &str) -> Option<String> {
+            self.conn.query_row("SELECT file_path FROM paper WHERE id = ?1", [id], |r| r.get(0)).unwrap()
+        }
+
+        fn attach(&self, id: &str, source: &Path) -> ImportOutcome {
+            attach_pdf(&self.conn, &self.library, id, source).unwrap()
+        }
+    }
+
+    #[test]
+    fn reads_the_pdf_of_a_paper() {
+        let s = setup();
+        s.import(&[s.source("a.pdf", PDF)]);
+        let id = s.id_of("pdfs/a.pdf");
+        let path = pdf_path(&s.conn, &s.library, &id).unwrap();
+        assert_eq!(read_pdf(&path).unwrap(), PDF);
+    }
+
+    #[test]
+    fn a_missing_file_is_reported_as_not_found() {
+        let s = setup();
+        s.import(&[s.source("a.pdf", PDF)]);
+        let id = s.id_of("pdfs/a.pdf");
+        std::fs::remove_file(s.library.join(PDF_FOLDER).join("a.pdf")).unwrap();
+        assert_eq!(pdf_path(&s.conn, &s.library, &id).unwrap_err().code, ErrorCode::NotFound);
+
+        let no_name: String = s.conn.query_row("INSERT INTO paper DEFAULT VALUES RETURNING id", [], |r| r.get(0)).unwrap();
+        assert_eq!(pdf_path(&s.conn, &s.library, &no_name).unwrap_err().code, ErrorCode::NotFound);
+        assert_eq!(pdf_path(&s.conn, &s.library, "no-such-id").unwrap_err().code, ErrorCode::Other);
+    }
+
+    #[test]
+    fn never_reads_outside_the_pdfs_folder() {
+        let s = setup();
+        std::fs::write(s.library.join("secret.pdf"), PDF).unwrap();
+        for stored in ["../secret.pdf", "pdfs/../secret.pdf", "secret.pdf", "pdfs/", "pdfs/a/b.pdf", "pdfs\\..\\secret.pdf"] {
+            s.conn.execute("DELETE FROM paper", []).unwrap();
+            s.conn.execute("INSERT INTO paper (file_path) VALUES (?1)", [stored]).unwrap();
+            let id = s.id_of(stored);
+            assert_eq!(pdf_path(&s.conn, &s.library, &id).unwrap_err().code, ErrorCode::NotFound, "{stored}");
+            assert!(list_papers(&s.conn, &s.library, &|_| true).unwrap()[0].file_missing, "{stored}");
+        }
+        assert_eq!(pdf_location(&s.library, "pdfs/a b.pdf"), Some(s.library.join("pdfs").join("a b.pdf")));
+    }
+
+    #[test]
+    fn attach_puts_the_file_back_under_the_papers_own_name() {
+        let s = setup();
+        s.import(&[s.source("kim.pdf", PDF)]);
+        let id = s.id_of("pdfs/kim.pdf");
+        std::fs::remove_file(s.library.join(PDF_FOLDER).join("kim.pdf")).unwrap();
+
+        let found = s.source("Kim et al 2021 (final).pdf", PDF);
+        assert_eq!(s.attach(&id, &found), Attached);
+        assert_eq!(s.files_in_pdfs(), ["kim.pdf"]);
+        assert_eq!(s.file_path_of(&id).as_deref(), Some("pdfs/kim.pdf"));
+        assert_eq!(read_pdf(&pdf_path(&s.conn, &s.library, &id).unwrap()).unwrap(), PDF);
+        // The chosen file stays where it was.
+        assert!(found.exists());
+    }
+
+    #[test]
+    fn attach_never_replaces_a_file_that_is_there() {
+        let s = setup();
+        s.import(&[s.source("kim.pdf", PDF)]);
+        let id = s.id_of("pdfs/kim.pdf");
+        assert_eq!(s.attach(&id, &s.pdf("other.pdf")), AlreadyInLibrary);
+        assert_eq!(s.stored("kim.pdf"), PDF);
+    }
+
+    #[test]
+    fn attach_gives_a_paper_without_a_name_the_files_name() {
+        let s = setup();
+        s.import(&[s.source("taken.pdf", PDF)]);
+        let id: String = s.conn.query_row("INSERT INTO paper DEFAULT VALUES RETURNING id", [], |r| r.get(0)).unwrap();
+
+        // Another paper already uses this name: the attached file gets a free one.
+        let source = s.pdf("taken.pdf");
+        assert_eq!(s.attach(&id, &source), Attached);
+        assert_eq!(s.file_path_of(&id).as_deref(), Some("pdfs/taken (2).pdf"));
+        assert_eq!(s.stored("taken.pdf"), PDF);
+        assert_eq!(s.files_in_pdfs(), ["taken (2).pdf", "taken.pdf"]);
+    }
+
+    #[test]
+    fn attach_refuses_a_file_that_is_not_a_pdf_and_changes_nothing() {
+        let s = setup();
+        s.import(&[s.source("kim.pdf", PDF)]);
+        let id = s.id_of("pdfs/kim.pdf");
+        std::fs::remove_file(s.library.join(PDF_FOLDER).join("kim.pdf")).unwrap();
+
+        assert_eq!(s.attach(&id, &s.source("notes.docx", b"PK\x03\x04")), NotPdf);
+        assert!(s.files_in_pdfs().is_empty());
+        assert_eq!(s.file_path_of(&id).as_deref(), Some("pdfs/kim.pdf"));
+        assert_eq!(attach_pdf(&s.conn, &s.library, "no-such-id", &s.pdf("x.pdf")).unwrap_err().code, ErrorCode::Other);
+    }
+
+    #[test]
+    fn attach_keeps_the_decision_and_other_data() {
+        // Rule 1: only the user changes a decision; attaching a file is not a decision.
+        let s = setup();
+        s.import(&[s.source("kim.pdf", PDF)]);
+        let id = s.id_of("pdfs/kim.pdf");
+        s.conn.execute("UPDATE paper SET decision = 'exclude', title = 'Kim' WHERE id = ?1", [&id]).unwrap();
+        std::fs::remove_file(s.library.join(PDF_FOLDER).join("kim.pdf")).unwrap();
+
+        assert_eq!(s.attach(&id, &s.pdf("found.pdf")), Attached);
+        let (decision, title): (String, String) = s
+            .conn
+            .query_row("SELECT decision, title FROM paper WHERE id = ?1", [&id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((decision.as_str(), title.as_str()), ("exclude", "Kim"));
+    }
+
+    #[test]
+    fn attach_reports_a_write_failure() {
+        let s = setup();
+        s.import(&[s.source("kim.pdf", PDF)]);
+        let id = s.id_of("pdfs/kim.pdf");
+        std::fs::remove_dir_all(s.library.join(PDF_FOLDER)).unwrap();
+        std::fs::write(s.library.join(PDF_FOLDER), "in the way").unwrap();
+        assert_eq!(s.attach(&id, &s.pdf("found.pdf")), WriteFailed);
     }
 
     #[test]

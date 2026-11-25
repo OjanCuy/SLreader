@@ -259,3 +259,17 @@ describe("import messages", () => {
     ]);
   });
 });
+
+describe("opening a paper (T-16)", () => {
+  it("shows the reader's empty state, then opens the clicked paper", async () => {
+    mocked.listPapers.mockResolvedValue([paper(), paper({ id: "2", fileName: "b.pdf" })]);
+    mocked.readPaperPdf.mockReturnValue(new Promise(() => {}));
+    await show();
+    expect(await screen.findByText("Select a paper from the list.")).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole("button", { name: "b.pdf" }));
+    expect(mocked.readPaperPdf).toHaveBeenCalledWith(7, "2");
+    expect(screen.getByRole("button", { name: "b.pdf" }).getAttribute("aria-current")).toBe("true");
+    expect(screen.getByText("Loading PDF…")).toBeTruthy();
+  });
+});

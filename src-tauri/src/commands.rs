@@ -9,7 +9,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::extraction::Extraction;
 use crate::libraries::{self, LibraryError, LibrarySummary};
-use crate::papers::{self, ImportReport, PaperListItem};
+use crate::papers::{self, ImportOutcome, ImportReport, PaperListItem};
 use crate::{AppDb, CurrentLibrary};
 
 /// A panic while holding a lock must not disable every later command.
@@ -154,6 +154,53 @@ pub fn import_pdfs(
         extraction.work_on(session, folder);
     }
     Ok(report)
+}
+
+/// Shows the system file picker for one PDF ("Attach PDF"). `None` when the user cancels.
+#[tauri::command(async)]
+pub fn pick_pdf(app: AppHandle, window: WebviewWindow) -> Option<String> {
+    app.dialog()
+        .file()
+        .set_parent(&window)
+        .add_filter("PDF", &["pdf"])
+        .blocking_pick_file()
+        .and_then(|file| file.into_path().ok())
+        .and_then(|path| path.to_str().map(String::from))
+}
+
+/// The bytes of a paper's PDF for the reader (FR-02.1), sent as binary, not JSON.
+/// The file is read after the library lock is released, so a large PDF does not hold
+/// up other commands.
+#[tauri::command(async)]
+pub fn read_paper_pdf(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paper_id: String,
+) -> Result<tauri::ipc::Response, LibraryError> {
+    let path = {
+        let current = lock(&current.0);
+        let (conn, folder) = libraries::library_and_folder_for_reading(&current, session)?;
+        papers::pdf_path(conn, folder, &paper_id)?
+    };
+    Ok(tauri::ipc::Response::new(papers::read_pdf(&path)?))
+}
+
+/// "Attach PDF" for a paper whose file is missing.
+#[tauri::command(async)]
+pub fn attach_pdf(
+    current: State<'_, CurrentLibrary>,
+    extraction: State<'_, Extraction>,
+    session: u64,
+    paper_id: String,
+    path: String,
+) -> Result<ImportOutcome, LibraryError> {
+    let current = lock(&current.0);
+    let (conn, folder) = libraries::library_and_folder_for_writing(&current, session)?;
+    let outcome = papers::attach_pdf(conn, folder, &paper_id, std::path::Path::new(&path))?;
+    if outcome == ImportOutcome::Attached {
+        extraction.work_on(session, folder);
+    }
+    Ok(outcome)
 }
 
 #[tauri::command(async)]

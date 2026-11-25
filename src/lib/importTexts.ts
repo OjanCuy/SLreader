@@ -1,7 +1,7 @@
 // Messages after importing PDFs (Brief Section 7, row "S-02 Paper list").
 // Do not reword them. "1 PDF added." was approved in T-12.
 
-import type { ImportReport } from "./api";
+import type { ImportOutcome, ImportReport } from "./api";
 import type { ToastTone } from "./components/toasts.svelte";
 import { SAVE_ERROR } from "./libraryTexts";
 
@@ -47,6 +47,19 @@ export function importMessages(report: ImportReport): ImportMessage[] {
     });
   }
   return messages;
+}
+
+/**
+ * The toast after "Attach PDF" (T-16), or null when the reader simply opens the PDF.
+ * Reuses the import texts above; no new wording.
+ */
+export function attachMessage(outcome: ImportOutcome, path: string): ImportMessage | null {
+  if (outcome === "not_pdf") {
+    const fileName = path.split(/[\\/]/).pop() || path;
+    return { message: `Could not open ${fileName}.`, tone: "error" };
+  }
+  if (outcome === "write_failed") return { message: SAVE_ERROR, tone: "error" };
+  return null;
 }
 
 /** True when at least one of the dragged files may be a PDF. */

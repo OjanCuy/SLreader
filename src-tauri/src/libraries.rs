@@ -78,7 +78,7 @@ pub struct LibraryError {
 }
 
 impl LibraryError {
-    fn new(code: ErrorCode, detail: impl Into<String>) -> Self {
+    pub(crate) fn new(code: ErrorCode, detail: impl Into<String>) -> Self {
         LibraryError { code, detail: detail.into() }
     }
 }

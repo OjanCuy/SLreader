@@ -75,6 +75,9 @@ pub fn run() {
             commands::pick_pdfs,
             commands::import_pdfs,
             commands::list_papers,
+            commands::pick_pdf,
+            commands::read_paper_pdf,
+            commands::attach_pdf,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

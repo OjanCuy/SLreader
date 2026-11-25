@@ -75,3 +75,5 @@ Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 The bundled fonts, [Inter](public/licenses/Inter-OFL.txt) and [Source Serif 4](public/licenses/SourceSerif4-OFL.txt), are licensed under the SIL Open Font License 1.1.
 
 Text is extracted from PDFs with [PDFium](https://pdfium.googlesource.com/pdfium/) (BSD 3-Clause and Apache 2.0), using the Windows build from [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries). Its licenses are installed with the app in the `pdfium/licenses` folder.
+
+PDFs are shown with [PDF.js](https://mozilla.github.io/pdf.js/) (Apache 2.0). Its license and those of its image decoders are included in the app under `pdfjs/`.
