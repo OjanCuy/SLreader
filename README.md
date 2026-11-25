@@ -44,6 +44,7 @@ See the [Tauri prerequisites guide](https://tauri.app/start/prerequisites/) for 
 
 ```bash
 npm install            # install UI dependencies
+npm run fetch-pdfium   # download PDFium (needed before any Rust build or test)
 npm run tauri dev      # run the app in development mode
 npm run tauri build    # build the Windows installer
 cargo test --manifest-path src-tauri/Cargo.toml   # Rust tests
@@ -51,7 +52,7 @@ npm run test           # UI tests
 npm run check          # type check the UI
 ```
 
-The first Rust build takes several minutes. The installer is written to `src-tauri/target/release/bundle/nsis/`.
+`npm run tauri dev` and `npm run tauri build` download PDFium themselves when it is missing. The first Rust build takes several minutes. The installer is written to `src-tauri/target/release/bundle/nsis/`.
 
 ### Continuous integration
 
@@ -72,3 +73,5 @@ Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 [MIT](LICENSE)
 
 The bundled fonts, [Inter](public/licenses/Inter-OFL.txt) and [Source Serif 4](public/licenses/SourceSerif4-OFL.txt), are licensed under the SIL Open Font License 1.1.
+
+Text is extracted from PDFs with [PDFium](https://pdfium.googlesource.com/pdfium/) (BSD 3-Clause and Apache 2.0), using the Windows build from [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries). Its licenses are installed with the app in the `pdfium/licenses` folder.

@@ -8,6 +8,7 @@
   import {
     importPdfs,
     listPapers,
+    onPaperTextChanged,
     pickPdfs,
     type LibrarySummary,
     type PaperListItem,
@@ -16,6 +17,7 @@
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Icon from "../lib/components/Icon.svelte";
   import InlineBanner from "../lib/components/InlineBanner.svelte";
+  import ProgressBar from "../lib/components/ProgressBar.svelte";
   import { dismissToast, showToast } from "../lib/components/toasts.svelte";
   import { ADD_ANYWAY, identicalMessage, importMessages, SKIP } from "../lib/importTexts";
   import { LIBRARY_PROBLEMS } from "../lib/libraryProblems";
@@ -43,7 +45,15 @@
 
   onMount(() => {
     refresh();
-    return () => questions.forEach(dismissToast);
+    // The background extraction reports each finished paper (FR-01.6).
+    const stop = onPaperTextChanged((changed) => {
+      if (changed === session) refresh();
+    });
+    stop.catch(() => {});
+    return () => {
+      questions.forEach(dismissToast);
+      stop.then((unlisten) => unlisten()).catch(() => {});
+    };
   });
 
   async function refresh() {
@@ -144,6 +154,9 @@
       {#each papers as paper (paper.id)}
         <li>
           <span class="name">{paper.title || paper.fileName}</span>
+          {#if paper.extracting}
+            <div class="extracting"><ProgressBar label="Extracting text…" indeterminate /></div>
+          {/if}
           {#if paper.fileMissing}
             <span class="missing"><Icon name="error" />PDF file is missing.</span>
           {/if}
@@ -209,6 +222,10 @@
   .name {
     font: var(--type-paper-list);
     overflow-wrap: anywhere;
+  }
+
+  .extracting {
+    width: 160px;
   }
 
   .missing {

@@ -47,6 +47,10 @@ jobs:
       - name: UI tests
         run: npm run test
 
+      # pdfium.dll for text extraction; checked against a fixed SHA-256.
+      - name: Download PDFium
+        run: npm run fetch-pdfium
+
       # Tauri embeds the built UI at compile time, so build it before the Rust tests.
       - name: Build the UI
         run: npm run build

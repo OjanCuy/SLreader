@@ -44,9 +44,17 @@ beforeEach(() => {
   }));
   // Each library has its own paper; the session tells them apart.
   mocked.listPapers.mockImplementation(async (session) => [
-    { id: `p${session}`, fileName: `paper-${session}.pdf`, title: "", fileMissing: false },
+    {
+      id: `p${session}`,
+      fileName: `paper-${session}.pdf`,
+      title: "",
+      fileMissing: false,
+      textStatus: "text_ready",
+      extracting: false,
+    },
   ]);
   mocked.onFileDrag.mockResolvedValue(() => {});
+  mocked.onPaperTextChanged.mockResolvedValue(() => {});
 });
 
 afterEach(() => {

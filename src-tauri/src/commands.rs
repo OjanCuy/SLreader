@@ -7,6 +7,7 @@ use std::sync::{Mutex, MutexGuard};
 use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::extraction::Extraction;
 use crate::libraries::{self, LibraryError, LibrarySummary};
 use crate::papers::{self, ImportReport, PaperListItem};
 use crate::{AppDb, CurrentLibrary};
@@ -15,6 +16,13 @@ use crate::{AppDb, CurrentLibrary};
 /// SQLite rolls unfinished changes back, so the connection stays usable.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Starts extracting the text of a library that was just opened (FR-01.6).
+fn extract_in_background(extraction: &Extraction, opened: &LibrarySummary) {
+    if let Some(session) = opened.session {
+        extraction.work_on(session, std::path::Path::new(&opened.folder_path));
+    }
 }
 
 #[tauri::command(async)]
@@ -26,31 +34,40 @@ pub fn list_libraries(app: State<'_, AppDb>) -> Result<Vec<LibrarySummary>, Libr
 pub fn create_library(
     app: State<'_, AppDb>,
     current: State<'_, CurrentLibrary>,
+    extraction: State<'_, Extraction>,
     folder_path: String,
     name: String,
 ) -> Result<LibrarySummary, LibraryError> {
     let app = lock(&app.0);
-    libraries::create(&app, &mut lock(&current.0), &folder_path, &name)
+    let opened = libraries::create(&app, &mut lock(&current.0), &folder_path, &name)?;
+    extract_in_background(&extraction, &opened);
+    Ok(opened)
 }
 
 #[tauri::command(async)]
 pub fn open_library_folder(
     app: State<'_, AppDb>,
     current: State<'_, CurrentLibrary>,
+    extraction: State<'_, Extraction>,
     folder_path: String,
 ) -> Result<LibrarySummary, LibraryError> {
     let app = lock(&app.0);
-    libraries::open_folder(&app, &mut lock(&current.0), &folder_path)
+    let opened = libraries::open_folder(&app, &mut lock(&current.0), &folder_path)?;
+    extract_in_background(&extraction, &opened);
+    Ok(opened)
 }
 
 #[tauri::command(async)]
 pub fn open_library(
     app: State<'_, AppDb>,
     current: State<'_, CurrentLibrary>,
+    extraction: State<'_, Extraction>,
     id: i64,
 ) -> Result<LibrarySummary, LibraryError> {
     let app = lock(&app.0);
-    libraries::open(&app, &mut lock(&current.0), id)
+    let opened = libraries::open(&app, &mut lock(&current.0), id)?;
+    extract_in_background(&extraction, &opened);
+    Ok(opened)
 }
 
 #[tauri::command(async)]
@@ -124,6 +141,7 @@ pub fn pick_pdfs(app: AppHandle, window: WebviewWindow) -> Vec<String> {
 #[tauri::command(async)]
 pub fn import_pdfs(
     current: State<'_, CurrentLibrary>,
+    extraction: State<'_, Extraction>,
     session: u64,
     paths: Vec<String>,
     allow_identical: bool,
@@ -131,15 +149,20 @@ pub fn import_pdfs(
     let current = lock(&current.0);
     let (conn, folder) = libraries::library_and_folder_for_writing(&current, session)?;
     let paths: Vec<std::path::PathBuf> = paths.into_iter().map(Into::into).collect();
-    papers::import_pdfs(conn, folder, &paths, allow_identical)
+    let report = papers::import_pdfs(conn, folder, &paths, allow_identical)?;
+    if report.added > 0 {
+        extraction.work_on(session, folder);
+    }
+    Ok(report)
 }
 
 #[tauri::command(async)]
 pub fn list_papers(
     current: State<'_, CurrentLibrary>,
+    extraction: State<'_, Extraction>,
     session: u64,
 ) -> Result<Vec<PaperListItem>, LibraryError> {
     let current = lock(&current.0);
     let (conn, folder) = libraries::library_and_folder_for_reading(&current, session)?;
-    papers::list_papers(conn, folder)
+    papers::list_papers(conn, folder, &|id| extraction.still_extracting(id))
 }

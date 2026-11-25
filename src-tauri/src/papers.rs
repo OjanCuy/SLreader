@@ -66,6 +66,10 @@ pub struct PaperListItem {
     pub title: String,
     /// The paper has a file name but the file is not in the library folder.
     pub file_missing: bool,
+    /// "pending", "text_ready", or "no_text" (FR-01.6).
+    pub text_status: String,
+    /// Pending, and the text is expected to be extracted in this run.
+    pub extracting: bool,
 }
 
 /// Copies the given files into the library and creates a paper for each (FR-01.2).
@@ -314,19 +318,29 @@ fn same_name(a: &str, b: &str) -> bool {
     a.to_lowercase() == b.to_lowercase()
 }
 
-/// All papers, oldest first.
-pub fn list_papers(conn: &Connection, folder: &Path) -> Result<Vec<PaperListItem>, LibraryError> {
-    let rows: Vec<(String, Option<String>, String)> = conn
-        .prepare("SELECT id, file_path, title FROM paper ORDER BY created_at, rowid")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+/// All papers, oldest first. `still_extracting` tells whether a pending paper is
+/// still in the queue of the background extraction.
+pub fn list_papers(
+    conn: &Connection,
+    folder: &Path,
+    still_extracting: &dyn Fn(&str) -> bool,
+) -> Result<Vec<PaperListItem>, LibraryError> {
+    let rows: Vec<(String, Option<String>, String, String)> = conn
+        .prepare("SELECT id, file_path, title, text_status FROM paper ORDER BY created_at, rowid")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .collect::<Result<_, _>>()?;
     Ok(rows
         .into_iter()
-        .map(|(id, file_path, title)| PaperListItem {
-            id,
-            file_missing: file_path.as_ref().is_some_and(|path| !folder.join(path).is_file()),
-            file_name: file_path.as_deref().map(display_name),
-            title,
+        .map(|(id, file_path, title, text_status)| {
+            let file_missing = file_path.as_ref().is_some_and(|path| !folder.join(path).is_file());
+            PaperListItem {
+                extracting: text_status == "pending" && !file_missing && still_extracting(&id),
+                id,
+                file_missing,
+                file_name: file_path.as_deref().map(display_name),
+                title,
+                text_status,
+            }
         })
         .collect())
 }
@@ -504,7 +518,7 @@ mod tests {
         let s = setup();
         s.conn.execute("INSERT INTO paper (file_path, title) VALUES ('pdfs/b.pdf', 'Restored')", []).unwrap();
         s.fill_to(250);
-        assert!(list_papers(&s.conn, &s.library).unwrap()[0].file_missing);
+        assert!(list_papers(&s.conn, &s.library, &|_| true).unwrap()[0].file_missing);
 
         let report = s.import(&[s.source("B.pdf", PDF)]);
         assert_eq!(report.files[0].outcome, Attached);
@@ -512,7 +526,7 @@ mod tests {
         assert_eq!(s.papers(), 250);
         // The stored name keeps its original spelling.
         assert_eq!(s.files_in_pdfs(), ["b.pdf"]);
-        let restored = &list_papers(&s.conn, &s.library).unwrap()[0];
+        let restored = &list_papers(&s.conn, &s.library, &|_| true).unwrap()[0];
         assert_eq!((restored.title.as_str(), restored.file_missing), ("Restored", false));
     }
 
@@ -531,7 +545,7 @@ mod tests {
         assert_eq!(s.stored("other.pdf"), different);
         assert_eq!(s.stored("other (2).pdf"), mine_content);
 
-        let names: Vec<_> = list_papers(&s.conn, &s.library)
+        let names: Vec<_> = list_papers(&s.conn, &s.library, &|_| true)
             .unwrap()
             .into_iter()
             .map(|p| p.file_name.unwrap())
@@ -563,7 +577,7 @@ mod tests {
         s.import(&[s.pdf("first.pdf"), s.pdf("second.pdf")]);
         std::fs::remove_file(s.library.join(PDF_FOLDER).join("first.pdf")).unwrap();
 
-        let papers = list_papers(&s.conn, &s.library).unwrap();
+        let papers = list_papers(&s.conn, &s.library, &|_| true).unwrap();
         let summary: Vec<_> = papers.iter().map(|p| (p.file_name.as_deref().unwrap(), p.file_missing)).collect();
         assert_eq!(summary, [("first.pdf", true), ("second.pdf", false)]);
     }
@@ -628,6 +642,19 @@ mod tests {
     }
 
     #[test]
+    fn new_papers_wait_for_text_unless_their_file_is_missing() {
+        let s = setup();
+        s.import(&[s.pdf("a.pdf"), s.pdf("b.pdf")]);
+        std::fs::remove_file(s.library.join(PDF_FOLDER).join("b.pdf")).unwrap();
+
+        let papers = list_papers(&s.conn, &s.library, &|_| true).unwrap();
+        let state: Vec<_> = papers.iter().map(|p| (p.text_status.as_str(), p.extracting)).collect();
+        assert_eq!(state, [("pending", true), ("pending", false)]);
+        let gave_up = list_papers(&s.conn, &s.library, &|_| false).unwrap();
+        assert!(!gave_up[0].extracting);
+    }
+
+    #[test]
     fn the_ui_receives_the_field_names_it_expects() {
         let s = setup();
         let report = serde_json::to_value(s.import(&[s.source("a.pdf", PDF)])).unwrap();
@@ -636,8 +663,8 @@ mod tests {
         for field in ["path", "identicalTo"] {
             assert!(report["files"][0].get(field).is_some(), "{field} is missing");
         }
-        let paper = serde_json::to_value(&list_papers(&s.conn, &s.library).unwrap()[0]).unwrap();
-        for field in ["id", "fileName", "title", "fileMissing"] {
+        let paper = serde_json::to_value(&list_papers(&s.conn, &s.library, &|_| true).unwrap()[0]).unwrap();
+        for field in ["id", "fileName", "title", "fileMissing", "textStatus", "extracting"] {
             assert!(paper.get(field).is_some(), "{field} is missing");
         }
     }

@@ -1,13 +1,16 @@
 mod commands;
 pub mod db;
+pub mod extraction;
 pub mod libraries;
 pub mod papers;
 pub mod sync;
+pub mod text;
 
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::Manager;
+use tauri::path::BaseDirectory;
+use tauri::{Emitter, Manager};
 
 /// The open app database (registry, AI providers, settings), shared by all commands.
 pub struct AppDb(pub Mutex<rusqlite::Connection>);
@@ -48,6 +51,14 @@ pub fn run() {
             let conn = db::app::open_app_db(&data_dir)?;
             app.manage(AppDb(Mutex::new(conn)));
             app.manage(CurrentLibrary::default());
+
+            // Text extraction in the background (FR-01.6). pdfium.dll ships with the app.
+            let dll = app.path().resolve("pdfium/pdfium.dll", BaseDirectory::Resource)?;
+            let handle = app.handle().clone();
+            app.manage(extraction::Extraction::start(dll, move |session| {
+                // The UI reloads the paper list of that library.
+                let _ = handle.emit("paper-text-changed", session);
+            }));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

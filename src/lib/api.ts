@@ -1,6 +1,7 @@
 // The only place the UI talks to the Rust core.
 // Every Tauri command gets a typed wrapper here, so components never call `invoke` directly.
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { LibraryProblem } from "./libraryProblems";
 
@@ -117,6 +118,9 @@ export interface PaperListItem {
   fileName: string | null;
   title: string;
   fileMissing: boolean;
+  textStatus: "pending" | "text_ready" | "no_text";
+  /** The text is being extracted in the background ("Extracting text…"). */
+  extracting: boolean;
 }
 
 /** Shows the system file picker for PDFs. Empty when the user cancels. */
@@ -150,4 +154,12 @@ export function onFileDrag(handler: (event: FileDrag) => void): Promise<() => vo
       handler({ type: "leave" });
     }
   });
+}
+
+/**
+ * Called with the session of a library each time the background extraction has
+ * finished a paper of it. Returns a function that stops listening.
+ */
+export function onPaperTextChanged(handler: (session: number) => void): Promise<() => void> {
+  return listen<number>("paper-text-changed", (event) => handler(event.payload));
 }

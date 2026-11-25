@@ -35,6 +35,17 @@ const report = (...files: [string, api.ImportOutcome][]): ImportReport => ({
 });
 
 let drag: (event: FileDrag) => void = () => {};
+let textChanged: (session: number) => void = () => {};
+
+const paper = (over: Partial<api.PaperListItem> = {}): api.PaperListItem => ({
+  id: "1",
+  fileName: "a.pdf",
+  title: "",
+  fileMissing: false,
+  textStatus: "text_ready",
+  extracting: false,
+  ...over,
+});
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -42,6 +53,10 @@ beforeEach(() => {
   mocked.listPapers.mockResolvedValue([]);
   mocked.onFileDrag.mockImplementation(async (handler) => {
     drag = handler;
+    return () => {};
+  });
+  mocked.onPaperTextChanged.mockImplementation(async (handler) => {
+    textChanged = handler;
     return () => {};
   });
 });
@@ -71,8 +86,8 @@ describe("importing PDFs", () => {
     mocked.importPdfs.mockResolvedValue(report(["a.pdf", "added"], ["b.pdf", "added"]));
     await show();
     mocked.listPapers.mockResolvedValue([
-      { id: "1", fileName: "a.pdf", title: "", fileMissing: false },
-      { id: "2", fileName: "b.pdf", title: "", fileMissing: true },
+      paper(),
+      paper({ id: "2", fileName: "b.pdf", fileMissing: true }),
     ]);
 
     await fireEvent.click(screen.getAllByRole("button", { name: "Upload PDF" })[0]);
@@ -142,6 +157,22 @@ describe("importing PDFs", () => {
       ]),
     );
     expect(mocked.importPdfs).not.toHaveBeenCalled();
+  });
+});
+
+describe("text extraction", () => {
+  it("shows progress while extracting and refreshes when a paper is done", async () => {
+    mocked.listPapers.mockResolvedValue([paper({ textStatus: "pending", extracting: true })]);
+    await show();
+    expect(await screen.findByText("Extracting text…")).toBeTruthy();
+    expect(screen.getByRole("progressbar", { name: "Extracting text…" })).toBeTruthy();
+
+    mocked.listPapers.mockResolvedValue([paper()]);
+    await vi.waitFor(() => expect(mocked.onPaperTextChanged).toHaveBeenCalled());
+    textChanged(99);
+    expect(mocked.listPapers).toHaveBeenCalledTimes(1);
+    textChanged(7);
+    await vi.waitFor(() => expect(screen.queryByText("Extracting text…")).toBeNull());
   });
 });
 
