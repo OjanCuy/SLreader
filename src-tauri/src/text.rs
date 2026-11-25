@@ -20,6 +20,10 @@ const MIN_CHARS_PER_PAGE: usize = 30;
 
 /// Loads pdfium.dll. The library is loaded once per run; later calls reuse it.
 pub fn load_pdfium(dll: &Path) -> Result<Pdfium, PdfiumError> {
+    // Checked first: once the library is loaded, binding no longer looks at the path.
+    if !dll.is_file() {
+        return Err(PdfiumError::IoError(std::io::ErrorKind::NotFound.into()));
+    }
     match Pdfium::bind_to_library(dll) {
         Ok(bindings) => Ok(Pdfium::new(bindings)),
         // Already loaded by an earlier call: this reuses it.
@@ -196,6 +200,12 @@ pub(crate) mod tests {
         let path = dir.join(name);
         std::fs::write(&path, make_pdf(pages)).unwrap();
         path
+    }
+
+    #[test]
+    fn a_missing_dll_is_an_error_even_after_pdfium_was_loaded() {
+        let _loaded = pdfium();
+        assert!(load_pdfium(Path::new("no-such-pdfium.dll")).is_err());
     }
 
     #[test]
