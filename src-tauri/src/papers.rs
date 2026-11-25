@@ -1,4 +1,5 @@
-//! Papers in the open library: importing PDFs (FR-01.2 to FR-01.5) and listing them.
+//! Papers in the open library: importing PDFs (FR-01.2 to FR-01.5), listing them,
+//! and deleting them (FR-01.7).
 //!
 //! Every function here receives the connection and folder of the open library from
 //! `libraries::library_and_folder_for_*`, so it can only touch that library (FR-14.4).
@@ -9,7 +10,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::Serialize;
 
 use crate::db::library::MAX_PAPERS;
@@ -410,6 +411,79 @@ pub fn attach_pdf(
             Ok(ImportOutcome::WriteFailed)
         }
     }
+}
+
+/// Deletes a paper, its PDF copy in the library, and everything that belongs to it:
+/// highlights, text chunks, suggestions, paper chats, and their citations (FR-01.7).
+/// The database removes those through `ON DELETE CASCADE`. The reference list, the
+/// reasons and tags, and the user's original file are not touched. The UI asks for
+/// confirmation first (O-10).
+///
+/// It is all or nothing: the PDF is first renamed out of the way, which fails while
+/// another program locks it, and gets its name back if the database cannot be saved.
+/// It is only removed once the paper is gone for good.
+pub fn delete_paper(conn: &Connection, folder: &Path, paper_id: &str) -> Result<(), LibraryError> {
+    // "Immediate" takes the write lock now, so a busy database fails before any file moves.
+    let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let stored: Option<String> = tx
+        .query_row("SELECT file_path FROM paper WHERE id = ?1", [paper_id], |r| r.get(0))
+        .optional()?
+        .ok_or_else(|| unknown_paper(paper_id))?;
+    tx.execute("DELETE FROM paper WHERE id = ?1", [paper_id])?;
+
+    // A file that another paper also points to (only in an edited database) stays.
+    let others: Vec<String> = tx
+        .prepare("SELECT file_path FROM paper WHERE file_path IS NOT NULL")?
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let file = stored
+        .filter(|stored| !others.iter().any(|other| same_name(other, stored)))
+        .and_then(|stored| pdf_location(folder, &stored));
+    let set_aside = match &file {
+        Some(path) => set_aside(path)?,
+        None => None,
+    };
+
+    if let Err(error) = tx.commit() {
+        if let (Some(from), Some(to)) = (&set_aside, &file) {
+            let _ = std::fs::rename(from, to);
+        }
+        return Err(error.into());
+    }
+    if let Some(path) = set_aside {
+        // The paper is already deleted; a leftover file does no harm to the library.
+        if let Err(error) = std::fs::remove_file(&path) {
+            eprintln!("could not remove {}: {error}", path.display());
+        }
+    }
+    Ok(())
+}
+
+/// Renames a PDF to a free name such as "kim.deleting.pdf" and returns that path.
+/// `None` when there is no file. The name keeps ".pdf", so a file left behind by a
+/// crash can still be chosen with "Attach PDF".
+fn set_aside(path: &Path) -> io::Result<Option<PathBuf>> {
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+        Ok(metadata) if metadata.is_dir() => return Ok(None),
+        Ok(_) => {}
+    }
+    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+    for number in 1.. {
+        let name = if number == 1 {
+            format!("{stem}.deleting.pdf")
+        } else {
+            format!("{stem}.deleting ({number}).pdf")
+        };
+        let target = path.with_file_name(name);
+        // `rename` would replace an existing file, so the name must be free.
+        if !target.try_exists()? {
+            std::fs::rename(path, &target)?;
+            return Ok(Some(target));
+        }
+    }
+    unreachable!("the loop only ends by returning")
 }
 
 /// All papers, oldest first. `still_extracting` tells whether a pending paper is
@@ -879,6 +953,192 @@ mod tests {
         std::fs::remove_dir_all(s.library.join(PDF_FOLDER)).unwrap();
         std::fs::write(s.library.join(PDF_FOLDER), "in the way").unwrap();
         assert_eq!(s.attach(&id, &s.pdf("found.pdf")), WriteFailed);
+    }
+
+    // ---- T-15: deleting a paper ----
+
+    /// Gives a paper one row in every table that hangs off it, plus a library chat
+    /// that quotes it.
+    fn add_everything(conn: &Connection, paper: &str) {
+        let insert = |sql: &str, id: &str| -> String { conn.query_row(sql, [id], |r| r.get(0)).unwrap() };
+        insert("INSERT INTO highlight (paper_id, page, color, text, rects) VALUES (?1, 1, 'green', 't', '[]') RETURNING id", paper);
+        let chunk = insert("INSERT INTO text_chunk (paper_id, page_start, page_end, text) VALUES (?1, 1, 1, 't') RETURNING id", paper);
+        let suggestion = insert(
+            "INSERT INTO suggestion (paper_id, proposed_decision, rationale, model_label) VALUES (?1, 'include', 'r', 'm') RETURNING id",
+            paper,
+        );
+        let thread = insert("INSERT INTO chat_thread (paper_id, scope) VALUES (?1, 'paper') RETURNING id", paper);
+        let message = insert("INSERT INTO chat_message (thread_id, role, content) VALUES (?1, 'assistant', 'a') RETURNING id", &thread);
+        let library_thread: String = conn
+            .query_row("INSERT INTO chat_thread (scope) VALUES ('library') RETURNING id", [], |r| r.get(0))
+            .unwrap();
+        let library_message = insert(
+            "INSERT INTO chat_message (thread_id, role, content) VALUES (?1, 'assistant', 'b') RETURNING id",
+            &library_thread,
+        );
+        for (column, id) in [("suggestion_id", &suggestion), ("message_id", &message), ("message_id", &library_message)] {
+            conn.execute(
+                &format!("INSERT INTO citation (chunk_id, {column}, quote, verified) VALUES (?1, ?2, 'q', 1)"),
+                params![chunk, id],
+            )
+            .unwrap();
+        }
+    }
+
+    fn rows(conn: &Connection, table: &str) -> i64 {
+        conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn delete_removes_the_paper_its_file_and_everything_that_belongs_to_it() {
+        let s = setup();
+        let source = s.pdf("gone.pdf");
+        s.import(&[source.clone(), s.pdf("kept.pdf")]);
+        let (gone, kept) = (s.id_of("pdfs/gone.pdf"), s.id_of("pdfs/kept.pdf"));
+        add_everything(&s.conn, &gone);
+        add_everything(&s.conn, &kept);
+
+        delete_paper(&s.conn, &s.library, &gone).unwrap();
+
+        assert_eq!(s.files_in_pdfs(), ["kept.pdf"]);
+        // The user's own file is not touched.
+        assert!(source.exists());
+        assert_eq!(s.file_path_of(&kept).as_deref(), Some("pdfs/kept.pdf"));
+        for table in ["paper", "highlight", "text_chunk", "suggestion"] {
+            assert_eq!(rows(&s.conn, table), 1, "{table}");
+        }
+        // The kept paper's chat and both library chats stay; only the citations that
+        // quoted the deleted paper are gone.
+        assert_eq!(rows(&s.conn, "chat_thread"), 3);
+        assert_eq!(rows(&s.conn, "chat_message"), 3);
+        assert_eq!(rows(&s.conn, "citation"), 3);
+    }
+
+    #[test]
+    fn delete_keeps_references_reasons_and_tags() {
+        let s = setup();
+        s.import(&[s.pdf("a.pdf")]);
+        let id = s.id_of("pdfs/a.pdf");
+        s.conn
+            .execute_batch(
+                "INSERT INTO reference (id, no, title) VALUES ('r', 1, 't');
+                 INSERT INTO exclusion_reason (id, code, label, sort_order) VALUES ('e', 'E1', 'x', 1);
+                 INSERT INTO extraction_tag (id, label, sort_order) VALUES ('t', 'x', 1);
+                 UPDATE paper SET reference_id = 'r', decision = 'exclude', exclusion_reason_id = 'e';",
+            )
+            .unwrap();
+        delete_paper(&s.conn, &s.library, &id).unwrap();
+        for table in ["reference", "exclusion_reason", "extraction_tag"] {
+            assert_eq!(rows(&s.conn, table), 1, "{table}");
+        }
+    }
+
+    #[test]
+    fn delete_frees_a_place_and_the_file_name() {
+        let s = setup();
+        s.import(&[s.pdf("a.pdf")]);
+        s.fill_to(250);
+        delete_paper(&s.conn, &s.library, &s.id_of("pdfs/a.pdf")).unwrap();
+        assert_eq!(s.outcomes(&[s.pdf("a.pdf")]), [Added]);
+        assert_eq!(s.files_in_pdfs(), ["a.pdf"]);
+    }
+
+    #[test]
+    fn delete_works_for_a_paper_without_a_file() {
+        let s = setup();
+        s.import(&[s.pdf("a.pdf")]);
+        std::fs::remove_file(s.library.join(PDF_FOLDER).join("a.pdf")).unwrap();
+        delete_paper(&s.conn, &s.library, &s.id_of("pdfs/a.pdf")).unwrap();
+        let no_name: String = s.conn.query_row("INSERT INTO paper DEFAULT VALUES RETURNING id", [], |r| r.get(0)).unwrap();
+        delete_paper(&s.conn, &s.library, &no_name).unwrap();
+        assert_eq!(s.papers(), 0);
+    }
+
+    #[test]
+    fn delete_removes_a_read_only_file() {
+        let s = setup();
+        s.import(&[s.pdf("a.pdf")]);
+        let path = s.library.join(PDF_FOLDER).join("a.pdf");
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        delete_paper(&s.conn, &s.library, &s.id_of("pdfs/a.pdf")).unwrap();
+        assert!(s.files_in_pdfs().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn delete_changes_nothing_while_another_program_locks_the_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let s = setup();
+        s.import(&[s.pdf("a.pdf")]);
+        let id = s.id_of("pdfs/a.pdf");
+        add_everything(&s.conn, &id);
+        // Share mode 0: nobody else may read, rename, or delete the file.
+        let lock = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(s.library.join(PDF_FOLDER).join("a.pdf"))
+            .unwrap();
+
+        assert_eq!(delete_paper(&s.conn, &s.library, &id).unwrap_err().code, ErrorCode::Other);
+        assert_eq!((s.papers(), rows(&s.conn, "highlight")), (1, 1));
+        drop(lock);
+        assert_eq!(s.files_in_pdfs(), ["a.pdf"]);
+        delete_paper(&s.conn, &s.library, &id).unwrap();
+        assert_eq!(s.papers(), 0);
+    }
+
+    #[test]
+    fn delete_puts_the_file_back_when_the_database_cannot_be_saved() {
+        let s = setup();
+        s.import(&[s.pdf("a.pdf")]);
+        let id = s.id_of("pdfs/a.pdf");
+        // A deferred foreign key violation only fails at COMMIT, after the file moved.
+        s.conn
+            .execute_batch(
+                "CREATE TABLE blocker (paper_id TEXT REFERENCES paper (id) DEFERRABLE INITIALLY DEFERRED);
+                 INSERT INTO blocker SELECT id FROM paper;",
+            )
+            .unwrap();
+        assert!(delete_paper(&s.conn, &s.library, &id).is_err());
+        assert_eq!(s.papers(), 1);
+        assert_eq!(s.files_in_pdfs(), ["a.pdf"]);
+    }
+
+    #[test]
+    fn delete_never_overwrites_or_removes_other_files() {
+        let s = setup();
+        s.import(&[s.pdf("a.pdf")]);
+        // The user's own file happens to have the temporary name.
+        std::fs::write(s.library.join(PDF_FOLDER).join("a.deleting.pdf"), "mine").unwrap();
+        delete_paper(&s.conn, &s.library, &s.id_of("pdfs/a.pdf")).unwrap();
+        assert_eq!(s.files_in_pdfs(), ["a.deleting.pdf"]);
+        assert_eq!(s.stored("a.deleting.pdf"), b"mine");
+    }
+
+    #[test]
+    fn delete_never_removes_a_file_outside_pdfs_or_used_by_another_paper() {
+        let s = setup();
+        std::fs::write(s.library.join("secret.pdf"), PDF).unwrap();
+        s.import(&[s.pdf("a.pdf")]);
+        s.conn
+            .execute_batch("INSERT INTO paper (file_path) VALUES ('pdfs/../secret.pdf'), ('pdfs/A.pdf');")
+            .unwrap();
+        delete_paper(&s.conn, &s.library, &s.id_of("pdfs/../secret.pdf")).unwrap();
+        delete_paper(&s.conn, &s.library, &s.id_of("pdfs/A.pdf")).unwrap();
+        assert!(s.library.join("secret.pdf").exists());
+        assert_eq!(s.files_in_pdfs(), ["a.pdf"]);
+        assert_eq!(s.papers(), 1);
+    }
+
+    #[test]
+    fn delete_of_an_unknown_paper_changes_nothing() {
+        let s = setup();
+        s.import(&[s.pdf("a.pdf")]);
+        assert_eq!(delete_paper(&s.conn, &s.library, "no-such-id").unwrap_err().code, ErrorCode::Other);
+        assert_eq!(s.papers(), 1);
+        assert_eq!(s.files_in_pdfs(), ["a.pdf"]);
     }
 
     #[test]

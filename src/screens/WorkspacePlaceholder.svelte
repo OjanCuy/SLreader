@@ -1,12 +1,15 @@
 <!--
   Temporary: the open library with its paper list on the left and the reader (T-16)
   in the middle, under the start of the S-02 top bar.
+  "Delete paper" sits at the bottom of the left panel until the Decision tab exists
+  (T-22, T-38).
   The real Workspace layout comes with T-38.
   App.svelte mounts it again for every opened library, so no state carries over.
 -->
 <script lang="ts">
   import { onMount } from "svelte";
   import {
+    deletePaper,
     importPdfs,
     listPapers,
     onPaperTextChanged,
@@ -24,6 +27,7 @@
   import { LIBRARY_PROBLEMS } from "../lib/libraryProblems";
   import { CLOUD_WARNING, libraryErrorMessage, libraryTitle } from "../lib/libraryTexts";
   import Reader from "../reader/Reader.svelte";
+  import DeletePaperDialog from "./DeletePaperDialog.svelte";
   import DropZone from "./DropZone.svelte";
   import LibrarySwitcher from "./LibrarySwitcher.svelte";
 
@@ -43,6 +47,10 @@
   let importing = $state(false);
   /** The paper open in the reader. */
   let selected = $state<string | null>(null);
+  const selectedPaper = $derived(papers?.find((paper) => paper.id === selected));
+  /** The paper in the "Delete paper?" dialog. */
+  let confirming = $state<PaperListItem | null>(null);
+  let deleting = $state(false);
 
   /** Open "Add anyway / Skip" questions; they belong to this library only. */
   const questions: number[] = [];
@@ -106,6 +114,22 @@
     questions.push(id);
   }
 
+  async function confirmDelete() {
+    const paper = confirming;
+    if (!paper || deleting) return;
+    deleting = true;
+    try {
+      await deletePaper(session, paper.id);
+      if (selected === paper.id) selected = null;
+      await refresh();
+    } catch (failure) {
+      showToast(libraryErrorMessage(failure, "remove"), "error");
+    } finally {
+      deleting = false;
+      confirming = null;
+    }
+  }
+
   async function upload() {
     if (importing) return;
     try {
@@ -165,6 +189,12 @@
           {/each}
         </ul>
       {/if}
+
+      {#if selectedPaper && !problem?.readOnly}
+        <div class="delete">
+          <Button variant="ghost" onclick={() => (confirming = selectedPaper)}>Delete paper</Button>
+        </div>
+      {/if}
     </nav>
 
     <main>
@@ -185,6 +215,15 @@
     </main>
   </div>
 </div>
+
+{#if confirming}
+  <DeletePaperDialog
+    name={confirming.fileName ?? confirming.title}
+    busy={deleting}
+    onconfirm={confirmDelete}
+    onclose={() => (confirming = null)}
+  />
+{/if}
 
 <DropZone ondrop={importPaths} />
 
@@ -240,7 +279,21 @@
     color: var(--text-secondary);
   }
 
+  /* Stays in view at the bottom of the panel, below a long paper list. */
+  .delete {
+    position: sticky;
+    bottom: calc(-1 * var(--space-4));
+    display: flex;
+    flex-direction: column;
+    margin-top: auto;
+    margin-bottom: calc(-1 * var(--space-4));
+    padding: var(--space-2) 0 var(--space-4);
+    border-top: 1px solid var(--border-subtle);
+    background: var(--surface-panel);
+  }
+
   ul {
+    flex-shrink: 0;
     display: flex;
     flex-direction: column;
     margin: 0;

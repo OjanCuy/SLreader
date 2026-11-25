@@ -140,6 +140,14 @@ export function listPapers(session: number): Promise<PaperListItem[]> {
   return invoke("list_papers", { session });
 }
 
+/**
+ * Deletes a paper, its PDF copy, and everything that belongs to it (FR-01.7).
+ * Only call it after the user has confirmed.
+ */
+export function deletePaper(session: number, paperId: string): Promise<void> {
+  return invoke("delete_paper", { session, paperId });
+}
+
 // ---- Reader (FR-02.1). ----
 
 /**

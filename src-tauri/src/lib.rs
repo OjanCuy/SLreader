@@ -78,6 +78,7 @@ pub fn run() {
             commands::pick_pdf,
             commands::read_paper_pdf,
             commands::attach_pdf,
+            commands::delete_paper,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

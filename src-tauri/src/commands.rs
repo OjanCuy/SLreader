@@ -203,6 +203,19 @@ pub fn attach_pdf(
     Ok(outcome)
 }
 
+/// Deletes a paper and everything that belongs to it (FR-01.7). The UI has asked
+/// the user to confirm (O-10).
+#[tauri::command(async)]
+pub fn delete_paper(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paper_id: String,
+) -> Result<(), LibraryError> {
+    let current = lock(&current.0);
+    let (conn, folder) = libraries::library_and_folder_for_writing(&current, session)?;
+    papers::delete_paper(conn, folder, &paper_id)
+}
+
 #[tauri::command(async)]
 pub fn list_papers(
     current: State<'_, CurrentLibrary>,
