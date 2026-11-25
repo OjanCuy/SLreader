@@ -29,9 +29,55 @@ pub fn create_library(folder: &Path, name: &str) -> Result<Connection, DbError> 
     if path.exists() {
         return Err(DbError::AlreadyExists(path));
     }
-    let conn = super::open(&path, &LIBRARY_SCHEMA, true)?;
-    conn.execute("INSERT INTO library (name) VALUES (?1)", [name])?;
-    Ok(conn)
+    // Claim the file name first: this fails if the file appeared in the meantime,
+    // so the clean-up below can only ever remove a file made right here.
+    std::fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+    let created = super::open(&path, &LIBRARY_SCHEMA, false).and_then(|conn| {
+        conn.execute("INSERT INTO library (name) VALUES (?1)", [name])?;
+        Ok(conn)
+    });
+    if created.is_err() {
+        // A half-made library (disk full, ...) would block every later attempt.
+        // Best effort: the original error matters more than a failed clean-up.
+        let _ = std::fs::remove_file(&path);
+    }
+    created
+}
+
+/// What the libraries list shows about a folder (FR-14.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryPeek {
+    /// `None` when a newer SLReader stores it in a way this version cannot read.
+    pub name: Option<String>,
+    pub paper_count: Option<i64>,
+    pub problem: Option<LibraryProblem>,
+}
+
+/// Reads a library's name and paper count without opening it for editing:
+/// nothing is migrated, and a missing or damaged library is reported, not repaired.
+pub fn peek_library(folder: &Path) -> Result<LibraryPeek, DbError> {
+    let (conn, version) = check_library(folder)?;
+    Ok(LibraryPeek {
+        name: conn.query_row("SELECT name FROM library", [], |r| r.get(0)).ok(),
+        paper_count: conn.query_row("SELECT count(*) FROM paper", [], |r| r.get(0)).ok(),
+        problem: (version > LIBRARY_SCHEMA.latest_version()).then_some(LibraryProblem::NewerVersion),
+    })
+}
+
+/// The read-only checks shared by opening and peeking. Returns the read-only
+/// connection and the schema version.
+fn check_library(folder: &Path) -> Result<(Connection, i64), DbError> {
+    let path = folder.join(LIBRARY_DB_FILE);
+    if !path.is_file() {
+        return Err(DbError::NotFound(path));
+    }
+    let (conn, version) = super::inspect(&path, &LIBRARY_SCHEMA)?;
+    let rows: Result<i64, _> = conn.query_row("SELECT count(*) FROM library", [], |r| r.get(0));
+    match rows {
+        Ok(1) => Ok((conn, version)),
+        Ok(n) => Err(DbError::Damaged(format!("{n} rows in the library table"))),
+        Err(e) => Err(DbError::Damaged(e.to_string())),
+    }
 }
 
 /// An open library. A read-only one refuses every write at the SQLite level.
@@ -49,25 +95,14 @@ pub struct OpenedLibrary {
 ///
 /// Never creates a database: a folder without one is `DbError::NotFound`.
 pub fn open_library(folder: &Path) -> Result<OpenedLibrary, DbError> {
-    let path = folder.join(LIBRARY_DB_FILE);
-    if !path.is_file() {
-        return Err(DbError::NotFound(path));
-    }
-
     // Look first, read-only: nothing is written to a damaged or newer file.
-    let (conn, version) = super::inspect(&path, &LIBRARY_SCHEMA)?;
-    let rows: Result<i64, _> = conn.query_row("SELECT count(*) FROM library", [], |r| r.get(0));
-    match rows {
-        Ok(1) => {}
-        Ok(n) => return Err(DbError::Damaged(format!("{n} rows in the library table"))),
-        Err(e) => return Err(DbError::Damaged(e.to_string())),
-    }
+    let (conn, version) = check_library(folder)?;
     if version > LIBRARY_SCHEMA.latest_version() {
         return Ok(OpenedLibrary { conn, read_only: Some(LibraryProblem::NewerVersion) });
     }
     drop(conn);
 
-    let conn = super::open(&path, &LIBRARY_SCHEMA, false)?;
+    let conn = super::open(&folder.join(LIBRARY_DB_FILE), &LIBRARY_SCHEMA, false)?;
     Ok(OpenedLibrary { conn, read_only: None })
 }
 

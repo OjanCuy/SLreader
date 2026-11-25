@@ -1,4 +1,6 @@
+mod commands;
 pub mod db;
+pub mod libraries;
 
 use std::sync::Mutex;
 
@@ -7,6 +9,10 @@ use tauri::Manager;
 
 /// The open app database (registry, AI providers, settings), shared by all commands.
 pub struct AppDb(pub Mutex<rusqlite::Connection>);
+
+/// The library the user is working in, if any. Always locked after `AppDb`.
+#[derive(Default)]
+pub struct CurrentLibrary(pub Mutex<Option<libraries::ActiveLibrary>>);
 
 /// Basic facts about the running app, sent to the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -38,9 +44,18 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             let conn = db::app::open_app_db(&data_dir)?;
             app.manage(AppDb(Mutex::new(conn)));
+            app.manage(CurrentLibrary::default());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![app_info])
+        .invoke_handler(tauri::generate_handler![
+            app_info,
+            commands::list_libraries,
+            commands::create_library,
+            commands::open_library_folder,
+            commands::open_library,
+            commands::rename_library,
+            commands::remove_library,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

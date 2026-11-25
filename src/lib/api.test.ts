@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { getAppInfo } from "./api";
+import {
+  createLibrary,
+  getAppInfo,
+  listLibraries,
+  openLibrary,
+  openLibraryFolder,
+  removeLibrary,
+  renameLibrary,
+} from "./api";
 
 // Replace the real Tauri bridge: tests run in Node, without the desktop app.
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -23,5 +31,25 @@ describe("getAppInfo", () => {
     mockedInvoke.mockRejectedValue(new Error("command failed"));
 
     await expect(getAppInfo()).rejects.toThrow("command failed");
+  });
+});
+
+describe("library commands", () => {
+  beforeEach(() => {
+    mockedInvoke.mockReset();
+    mockedInvoke.mockResolvedValue(undefined);
+  });
+
+  // Names and arguments must match the #[tauri::command] functions in commands.rs.
+  it.each([
+    [() => listLibraries(), ["list_libraries"]],
+    [() => createLibrary("C:/r", "R"), ["create_library", { folderPath: "C:/r", name: "R" }]],
+    [() => openLibraryFolder("C:/r"), ["open_library_folder", { folderPath: "C:/r" }]],
+    [() => openLibrary(1), ["open_library", { id: 1 }]],
+    [() => renameLibrary(1, "N"), ["rename_library", { id: 1, name: "N" }]],
+    [() => removeLibrary(1), ["remove_library", { id: 1 }]],
+  ] as [() => Promise<unknown>, unknown[]][])("calls %#", async (call, expected) => {
+    await call();
+    expect(mockedInvoke).toHaveBeenCalledWith(...(expected as [string]));
   });
 });
