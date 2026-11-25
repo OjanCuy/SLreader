@@ -186,6 +186,23 @@ pub fn read_paper_pdf(
     Ok(tauri::ipc::Response::new(papers::read_pdf(&path)?))
 }
 
+/// The user opened a password-protected paper with this password: extract its text
+/// now (T-19). The password stays in memory until it has been tried once; it is never
+/// saved, logged, or put in an error. Refused for a read-only library.
+#[tauri::command(async)]
+pub fn extract_locked_paper_text(
+    current: State<'_, CurrentLibrary>,
+    extraction: State<'_, Extraction>,
+    session: u64,
+    paper_id: String,
+    password: String,
+) -> Result<(), LibraryError> {
+    let current = lock(&current.0);
+    let (_, folder) = libraries::library_and_folder_for_writing(&current, session)?;
+    extraction.extract_with_password(session, folder, &paper_id, password);
+    Ok(())
+}
+
 /// "Attach PDF" for a paper whose file is missing.
 #[tauri::command(async)]
 pub fn attach_pdf(

@@ -179,6 +179,14 @@ export function setPageMode(mode: PageMode): Promise<void> {
   return invoke("set_page_mode", { mode });
 }
 
+/**
+ * The user opened a password-protected paper with this password: its text is
+ * extracted once with it. The password is never stored. Rejects for a read-only library.
+ */
+export function extractLockedPaperText(session: number, paperId: string, password: string): Promise<void> {
+  return invoke("extract_locked_paper_text", { session, paperId, password });
+}
+
 /** Shows the system file picker for one PDF. Null when the user cancels. */
 export function pickPdf(): Promise<string | null> {
   return invoke("pick_pdf");

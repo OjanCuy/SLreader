@@ -3,12 +3,15 @@
   at (FR-02.3), and keeps the page mode (FR-02.2).
   States from Brief Section 7: "Select a paper from the list.", "Loading PDF…",
   "PDF file is missing." + "Attach PDF", "This PDF can't be opened.".
-  Password-protected PDFs get their own prompt in T-19; until then they cannot be opened.
+  A password-protected PDF asks for its password when opened (PRD Section 8, T-19):
+  "This PDF is password-protected." + "Enter password" / "Skip". The password is used
+  to open the PDF and, once, to extract its text; it is never stored.
 -->
 <script lang="ts">
   import { onMount } from "svelte";
   import {
     attachPdf,
+    extractLockedPaperText,
     getLastPage,
     getPageMode,
     pickPdf,
@@ -26,8 +29,9 @@
   import { attachMessage } from "../lib/importTexts";
   import { libraryErrorMessage } from "../lib/libraryTexts";
   import { createPageSaver, type PageSaver } from "./pageSaver";
+  import PasswordDialog from "./PasswordDialog.svelte";
   import PdfView from "./PdfView.svelte";
-  import { openPdf, type OpenedPdf } from "./pdfjs";
+  import { openPdf, PdfOpenError, type OpenedPdf } from "./pdfjs";
 
   interface Props {
     session: number;
@@ -46,12 +50,23 @@
     | { kind: "loading" }
     | { kind: "missing" }
     | { kind: "broken" }
+    | { kind: "locked" }
     | { kind: "ready"; pdf: OpenedPdf; startPage: number; saver: PageSaver };
 
   let view = $state<View>({ kind: "empty" });
-  /** Bumped to open the same paper again, e.g. after "Attach PDF". */
+  /** Bumped to open the same paper again, e.g. after "Attach PDF" or a password. */
   let reload = $state(0);
   let attaching = $state(false);
+
+  /** The password dialog is open. */
+  let askingPassword = $state(false);
+  let wrongPassword = $state(false);
+  /**
+   * The password to try on the next opening, for `passwordFor` only. A plain variable,
+   * not state, and cleared as soon as it is taken: it is never kept or saved.
+   */
+  let password: string | undefined;
+  let passwordFor: string | null = null;
 
   let mode = $state<PageMode>("normal");
   /** The user's choice wins over a stored mode that arrives late. */
@@ -84,6 +99,13 @@
   $effect(() => {
     const id = paperId;
     void reload;
+    // Another paper: nothing about the last one's password carries over.
+    if (passwordFor !== id) {
+      password = undefined;
+      passwordFor = id;
+      askingPassword = false;
+      wrongPassword = false;
+    }
     if (id === null) {
       view = { kind: "empty" };
       return;
@@ -97,16 +119,34 @@
     const saver = createPageSaver(async (page) => {
       if (writable) await saveLastPage(ofSession, id, page);
     });
+    const tried = password;
+    password = undefined;
 
     (async () => {
       try {
         const [bytes, startPage] = await Promise.all([readPaperPdf(session, id), lastPage(id)]);
         if (stopped) return;
-        opened = await openPdf(bytes);
+        opened = await openPdf(bytes, tried);
         if (stopped) return opened.close();
         view = { kind: "ready", pdf: opened, startPage, saver };
+        askingPassword = false;
+        wrongPassword = false;
+        if (tried !== undefined && writable) {
+          // The text of a locked PDF can only be read with its password (FR-01.6).
+          extractLockedPaperText(ofSession, id, tried).catch((failure: LibraryError) =>
+            console.error("The text of the locked PDF was not extracted", failure?.code),
+          );
+        }
       } catch (failure) {
         if (stopped) return;
+        if (failure instanceof PdfOpenError && failure.problem !== "damaged") {
+          view = { kind: "locked" };
+          wrongPassword = failure.problem === "wrong_password";
+          // Asked when the paper is opened; after "Skip", only "Enter password" asks again.
+          if (failure.problem === "locked" && tried === undefined) askingPassword = true;
+          return;
+        }
+        askingPassword = false;
         view = isMissing(failure) ? { kind: "missing" } : { kind: "broken" };
       }
     })();
@@ -117,6 +157,13 @@
       opened?.close();
     };
   });
+
+  /** "Open" in the password dialog: open the same paper again with this password. */
+  function tryPassword(value: string) {
+    password = value;
+    wrongPassword = false;
+    reload++;
+  }
 
   function isMissing(failure: unknown): boolean {
     return (failure as LibraryError | null)?.code === "not_found";
@@ -165,10 +212,27 @@
     </div>
   {:else if view.kind === "broken"}
     <p class="state problem" role="alert"><Icon name="error" />This PDF can't be opened.</p>
+  {:else if view.kind === "locked"}
+    <div class="state" role="status">
+      <p class="locked"><Icon name="info" />This PDF is password-protected.</p>
+      <Button onclick={() => (askingPassword = true)}>Enter password</Button>
+    </div>
   {:else}
     <EmptyState title="Select a paper from the list." />
   {/if}
 </section>
+
+{#if askingPassword}
+  <PasswordDialog
+    busy={view.kind === "loading"}
+    wrong={wrongPassword}
+    onopen={tryPassword}
+    onskip={() => {
+      askingPassword = false;
+      wrongPassword = false;
+    }}
+  />
+{/if}
 
 <style>
   .reader {
@@ -199,6 +263,13 @@
   p.state {
     flex-direction: row;
     gap: var(--space-2);
+  }
+
+  .locked {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin: 0;
   }
 
   .problem {

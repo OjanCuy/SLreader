@@ -4,8 +4,12 @@
 //! The worker handles the papers with `text_status = 'pending'` of the open library.
 //! After the app is closed, the remaining papers stay pending and are picked up
 //! again the next time the library is opened (PRD Section 8).
+//!
+//! A password-protected paper stays pending until the user opens it in the reader with
+//! the right password (T-19). That password is handed to the worker, kept in memory
+//! only until the paper has been tried once, and never written anywhere (PRD Section 8).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
@@ -32,8 +36,24 @@ struct State {
     /// password-protected file). They stay "pending" and are tried again after the
     /// next import or opening.
     failed: HashSet<String>,
+    /// Passwords of locked papers of the target library, by paper id. Each one is
+    /// removed when its paper is tried, and all are dropped when the target changes
+    /// or the worker runs out of work.
+    passwords: HashMap<String, String>,
     /// pdfium.dll could not be loaded: nothing is extracted in this run.
     unavailable: bool,
+}
+
+impl State {
+    /// Points the worker at a library. Passwords and failures of another library (or
+    /// an earlier opening of the same one) do not carry over.
+    fn aim_at(&mut self, target: Target) {
+        if self.target.as_ref() != Some(&target) {
+            self.passwords.clear();
+        }
+        self.target = Some(target);
+        self.failed.clear();
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -59,8 +79,20 @@ impl Extraction {
     /// failed earlier are tried again.
     pub fn work_on(&self, session: u64, folder: &Path) {
         let mut state = lock(&self.0.state);
-        state.target = Some(Target { session, folder: folder.to_path_buf() });
-        state.failed.clear();
+        state.aim_at(Target { session, folder: folder.to_path_buf() });
+        state.woken = true;
+        self.0.wake.notify_one();
+    }
+
+    /// Extracts a password-protected paper with the password the user just opened it
+    /// with. The password is used once and then dropped, whether it works or not.
+    pub fn extract_with_password(&self, session: u64, folder: &Path, paper_id: &str, password: String) {
+        let mut state = lock(&self.0.state);
+        if state.unavailable {
+            return;
+        }
+        state.aim_at(Target { session, folder: folder.to_path_buf() });
+        state.passwords.insert(paper_id.to_string(), password);
         state.woken = true;
         self.0.wake.notify_one();
     }
@@ -97,6 +129,13 @@ fn run(shared: &Shared, dll: &Path, notify: &Notify) {
         if let Some(target) = target {
             work(shared, &pdfium, &target, notify);
         }
+        // Nothing left to do: a password that was not used (its paper already had its
+        // text, was deleted, or is in a read-only library) is not kept. A request that
+        // came in meanwhile has woken the worker again and keeps its password.
+        let mut state = lock(&shared.state);
+        if !state.woken {
+            state.passwords.clear();
+        }
     }
 }
 
@@ -119,11 +158,12 @@ fn work(shared: &Shared, pdfium: &pdfium_render::prelude::Pdfium, target: &Targe
         };
         let Ok(next) = next_pending(&conn, &failed) else { return };
         let Some((paper_id, file_path)) = next else { return };
+        let password = lock(&shared.state).passwords.remove(&paper_id);
 
         let saved = file_path
             .and_then(|stored| pdf_location(&target.folder, &stored))
             .ok_or(())
-            .and_then(|path| extract_pages(pdfium, &path).map_err(|_| ()))
+            .and_then(|path| extract_pages(pdfium, &path, password.as_deref()).map_err(|_| ()))
             .and_then(|pages| save_text(&mut conn, &paper_id, &pages).map_err(|_| ()));
         if saved.is_err() {
             lock(&shared.state).failed.insert(paper_id);
@@ -155,14 +195,17 @@ mod tests {
     use super::*;
     use crate::db::library::create_library;
     use crate::libraries::PDF_FOLDER;
-    use crate::text::tests::{make_pdf, test_dll};
+    use crate::text::tests::{make_locked_pdf, make_pdf, test_dll};
     use std::sync::mpsc;
     use std::time::Duration;
 
     const TEXT: &str = "Recirculating aquaculture systems for tilapia production in Indonesia\n\
                         Feed conversion ratio was 1.4 in treatment B and 1.7 in treatment C.";
 
-    /// A library with one paper per (file name, pages, file present) entry.
+    const PASSWORD: &str = "kunci-rahasia-19";
+
+    /// A library with one paper per (file name, pages, file present) entry. A file
+    /// whose name starts with "locked" is protected with `PASSWORD`.
     fn library(papers: &[(&str, &[&str], bool)]) -> (tempfile::TempDir, Vec<String>) {
         let dir = tempfile::tempdir().unwrap();
         let conn = create_library(dir.path(), "R").unwrap();
@@ -172,7 +215,9 @@ mod tests {
             .map(|(name, pages, present)| {
                 let path = format!("{PDF_FOLDER}/{name}");
                 if *present {
-                    std::fs::write(dir.path().join(&path), make_pdf(pages)).unwrap();
+                    let bytes =
+                        if name.starts_with("locked") { make_locked_pdf(pages, PASSWORD) } else { make_pdf(pages) };
+                    std::fs::write(dir.path().join(&path), bytes).unwrap();
                 }
                 conn.query_row("INSERT INTO paper (file_path) VALUES (?1) RETURNING id", [&path], |r| r.get(0))
                     .unwrap()
@@ -220,6 +265,94 @@ mod tests {
         extraction.work_on(8, dir.path());
         assert_eq!(wait_for(&receiver, 1), [8]);
         assert_eq!(statuses(dir.path()), ["text_ready", "no_text", "text_ready"]);
+    }
+
+    fn passwords_held(extraction: &Extraction) -> usize {
+        lock(&extraction.0.state).passwords.len()
+    }
+
+    /// Every byte the library folder holds on disk, database and journal files included.
+    fn folder_bytes(dir: &Path) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for entry in walk(dir) {
+            bytes.extend(std::fs::read(entry).unwrap());
+        }
+        bytes
+    }
+
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .flat_map(|path| if path.is_dir() { walk(&path) } else { vec![path] })
+            .collect()
+    }
+
+    fn contains(haystack: &[u8], needle: &str) -> bool {
+        haystack.windows(needle.len()).any(|window| window == needle.as_bytes())
+    }
+
+    #[test]
+    fn a_locked_paper_gets_its_text_once_the_right_password_is_given() {
+        let (dir, ids) = library(&[("locked.pdf", &[TEXT], true)]);
+        let (extraction, receiver) = start();
+        extraction.work_on(3, dir.path());
+        assert_eq!(wait_for(&receiver, 1), [3]);
+        assert_eq!(statuses(dir.path()), ["pending"]);
+        assert!(!extraction.still_extracting(&ids[0]));
+
+        // A wrong password is tried once and dropped.
+        extraction.extract_with_password(3, dir.path(), &ids[0], "wrong".into());
+        assert_eq!(wait_for(&receiver, 1), [3]);
+        assert_eq!(statuses(dir.path()), ["pending"]);
+        assert!(!extraction.still_extracting(&ids[0]));
+        assert_eq!(passwords_held(&extraction), 0);
+
+        extraction.extract_with_password(3, dir.path(), &ids[0], PASSWORD.into());
+        assert_eq!(wait_for(&receiver, 1), [3]);
+        assert_eq!(statuses(dir.path()), ["text_ready"]);
+        assert_eq!(passwords_held(&extraction), 0);
+
+        // The password is not written anywhere in the library folder (PRD Section 8).
+        drop(extraction);
+        assert!(!contains(&folder_bytes(dir.path()), PASSWORD));
+    }
+
+    #[test]
+    fn an_unused_password_is_not_kept() {
+        // The paper already has its text: the password has nothing to unlock.
+        let (dir, ids) = library(&[("text.pdf", &[TEXT], true)]);
+        let (extraction, receiver) = start();
+        extraction.work_on(1, dir.path());
+        assert_eq!(wait_for(&receiver, 1), [1]);
+
+        extraction.extract_with_password(1, dir.path(), &ids[0], PASSWORD.into());
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while passwords_held(&extraction) > 0 {
+            assert!(std::time::Instant::now() < deadline, "the password was kept");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(statuses(dir.path()), ["text_ready"]);
+    }
+
+    #[test]
+    fn a_password_is_not_used_for_another_library() {
+        let (first, ids) = library(&[("locked.pdf", &[TEXT], true)]);
+        let (other, _) = library(&[]);
+        let state = Mutex::new(State::default());
+        let mut state = lock(&state);
+        state.aim_at(Target { session: 1, folder: first.path().into() });
+        state.passwords.insert(ids[0].clone(), PASSWORD.into());
+        // Opening the same library again, or another one, drops it.
+        state.aim_at(Target { session: 2, folder: first.path().into() });
+        assert!(state.passwords.is_empty());
+        state.passwords.insert(ids[0].clone(), PASSWORD.into());
+        state.aim_at(Target { session: 3, folder: other.path().into() });
+        assert!(state.passwords.is_empty());
+        // An import into the library being worked on keeps it.
+        state.passwords.insert(ids[0].clone(), PASSWORD.into());
+        state.aim_at(Target { session: 3, folder: other.path().into() });
+        assert_eq!(state.passwords.len(), 1);
     }
 
     #[test]

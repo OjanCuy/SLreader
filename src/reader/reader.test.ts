@@ -40,6 +40,13 @@ const missing: api.LibraryError = { code: "not_found", detail: "the paper has no
 
 beforeEach(() => {
   vi.resetAllMocks();
+  // jsdom has no modal dialogs.
+  HTMLDialogElement.prototype.showModal = function () {
+    this.setAttribute("open", "");
+  };
+  HTMLDialogElement.prototype.close = function () {
+    this.removeAttribute("open");
+  };
   mocked.readPaperPdf.mockResolvedValue(new ArrayBuffer(8));
   openPdf.mockImplementation(async () => fakePdf(3));
 });
@@ -94,7 +101,7 @@ describe("Reader states (Brief Section 7, S-02 Reader)", () => {
   });
 
   it("says a PDF that PDF.js cannot read can't be opened", async () => {
-    openPdf.mockRejectedValue(new pdfjs.PdfOpenError(false, new Error("Invalid PDF structure")));
+    openPdf.mockRejectedValue(new pdfjs.PdfOpenError("damaged", new Error("Invalid PDF structure")));
     show();
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain("This PDF can't be opened.");
@@ -110,6 +117,114 @@ describe("Reader states (Brief Section 7, S-02 Reader)", () => {
     expect(first.close).toHaveBeenCalled();
     expect(await screen.findByText("/ 3")).toBeTruthy();
     expect(mocked.readPaperPdf).toHaveBeenLastCalledWith(7, "p2");
+  });
+});
+
+describe("password-protected PDF (PRD Section 8)", () => {
+  const RIGHT = "tilapia-19";
+
+  beforeEach(() => {
+    openPdf.mockImplementation(async (_bytes, password) => {
+      if (password === undefined) throw new pdfjs.PdfOpenError("locked", new Error("No password given"));
+      if (password !== RIGHT) throw new pdfjs.PdfOpenError("wrong_password", new Error("Incorrect Password"));
+      return fakePdf(3);
+    });
+    mocked.extractLockedPaperText.mockResolvedValue();
+  });
+
+  const field = () => screen.getByLabelText("Password") as HTMLInputElement;
+  const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
+
+  async function enter(password: string) {
+    await fireEvent.input(field(), { target: { value: password } });
+    await fireEvent.click(button("Open"));
+  }
+
+  /** Every argument the app passed to Rust, as text. */
+  function everythingSentToRust(): string {
+    const calls: unknown[] = Object.values(mocked).map((fn) => (vi.isMockFunction(fn) ? fn.mock.calls : []));
+    return JSON.stringify(calls);
+  }
+
+  it("asks for the password when the paper is opened", async () => {
+    show();
+    const dialog = await screen.findByRole("dialog", { name: "Enter password" });
+    expect(dialog.textContent).toContain("This PDF is password-protected.");
+    expect(field().type).toBe("password");
+    expect(button("Skip")).toBeTruthy();
+    expect(button("Open").disabled).toBe(true);
+  });
+
+  it("says a wrong password is wrong and lets the user try again", async () => {
+    show();
+    await screen.findByRole("dialog");
+    await enter("wrong");
+    expect(await screen.findByText("Wrong password. Try again.")).toBeTruthy();
+    expect(openPdf).toHaveBeenLastCalledWith(expect.any(ArrayBuffer), "wrong");
+    // PDF.js took the bytes: they are read again for each try.
+    expect(mocked.readPaperPdf).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(field().value).toBe(""));
+    expect(mocked.extractLockedPaperText).not.toHaveBeenCalled();
+
+    await enter(RIGHT);
+    expect(await screen.findByText("/ 3")).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("extracts the text once with the right password and sends it nowhere else", async () => {
+    show();
+    await screen.findByRole("dialog");
+    await enter(RIGHT);
+    await screen.findByText("/ 3");
+    expect(mocked.extractLockedPaperText).toHaveBeenCalledExactlyOnceWith(7, "p1", RIGHT);
+    mocked.extractLockedPaperText.mockClear();
+    expect(everythingSentToRust()).not.toContain(RIGHT);
+  });
+
+  it("opens but extracts nothing in a read-only library", async () => {
+    show({ readOnly: true });
+    await screen.findByRole("dialog");
+    await enter(RIGHT);
+    await screen.findByText("/ 3");
+    expect(mocked.extractLockedPaperText).not.toHaveBeenCalled();
+  });
+
+  it("Skip leaves the PDF closed until Enter password is clicked", async () => {
+    show();
+    await screen.findByRole("dialog");
+    await fireEvent.click(button("Skip"));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    const state = screen.getByRole("status");
+    expect(state.textContent).toContain("This PDF is password-protected.");
+    expect(state.querySelector("[data-icon]")).toBeTruthy();
+
+    await fireEvent.click(button("Enter password"));
+    await enter(RIGHT);
+    expect(await screen.findByText("/ 3")).toBeTruthy();
+  });
+
+  it("does not use one paper's password for another paper", async () => {
+    const { rerender } = show();
+    await screen.findByRole("dialog");
+    await enter(RIGHT);
+    await screen.findByText("/ 3");
+
+    await rerender({ paperId: "p2" });
+    expect(await screen.findByRole("dialog", { name: "Enter password" })).toBeTruthy();
+    expect(openPdf).toHaveBeenLastCalledWith(expect.any(ArrayBuffer), undefined);
+    // Opening p1 again asks again: the password was not kept.
+    await fireEvent.click(button("Skip"));
+    await rerender({ paperId: "p1" });
+    await screen.findByRole("dialog");
+    expect(openPdf).toHaveBeenLastCalledWith(expect.any(ArrayBuffer), undefined);
+  });
+
+  it("tells a missing password, a wrong one, and a damaged file apart", () => {
+    const passwordException = (code: number) => Object.assign(new Error("x"), { name: "PasswordException", code });
+    expect(pdfjs.problemOf(passwordException(1))).toBe("locked");
+    expect(pdfjs.problemOf(passwordException(2))).toBe("wrong_password");
+    expect(pdfjs.problemOf(Object.assign(new Error("x"), { name: "InvalidPDFException" }))).toBe("damaged");
+    expect(pdfjs.problemOf(null)).toBe("damaged");
   });
 });
 

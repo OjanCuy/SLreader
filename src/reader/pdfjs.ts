@@ -25,17 +25,37 @@ export interface OpenedPdf {
   close: () => void;
 }
 
-/** Thrown when PDF.js cannot open the file: damaged, not a PDF, or password-protected. */
+/**
+ * Why PDF.js could not open the file: "damaged" (also not a PDF), "locked" (it needs a
+ * password and none was given), or "wrong_password".
+ */
+export type PdfOpenProblem = "damaged" | "locked" | "wrong_password";
+
 export class PdfOpenError extends Error {
-  constructor(readonly passwordProtected: boolean, cause: unknown) {
+  constructor(readonly problem: PdfOpenProblem, cause: unknown) {
     super("PDF.js could not open the document", { cause });
   }
 }
 
-export async function openPdf(data: ArrayBuffer): Promise<OpenedPdf> {
+/** PasswordResponses in PDF.js: 1 = a password is needed, 2 = the given one is wrong. */
+const INCORRECT_PASSWORD = 2;
+
+/** Sorts a rejection of PDF.js's loading task. Exported for tests. */
+export function problemOf(failure: unknown): PdfOpenProblem {
+  const { name, code } = (failure ?? {}) as { name?: string; code?: number };
+  if (name !== "PasswordException") return "damaged";
+  return code === INCORRECT_PASSWORD ? "wrong_password" : "locked";
+}
+
+/**
+ * Opens a PDF. `password` is only passed on to PDF.js for this document; it is not kept.
+ * PDF.js takes over `data`, so opening the file again needs its bytes again.
+ */
+export async function openPdf(data: ArrayBuffer, password?: string): Promise<OpenedPdf> {
   const task: PDFDocumentLoadingTask = getDocument({
     // PDF.js takes ownership of the bytes; the caller keeps no copy.
     data: new Uint8Array(data),
+    password,
     cMapUrl: assets("cmaps"),
     standardFontDataUrl: assets("standard_fonts"),
     wasmUrl: assets("wasm"),
@@ -55,8 +75,7 @@ export async function openPdf(data: ArrayBuffer): Promise<OpenedPdf> {
     return { doc, sizes, close };
   } catch (failure) {
     close();
-    const name = (failure as { name?: string } | null)?.name;
-    throw new PdfOpenError(name === "PasswordException", failure);
+    throw new PdfOpenError(problemOf(failure), failure);
   }
 }
 

@@ -79,6 +79,7 @@ pub fn run() {
             commands::pick_pdf,
             commands::read_paper_pdf,
             commands::attach_pdf,
+            commands::extract_locked_paper_text,
             commands::delete_paper,
             commands::get_last_page,
             commands::save_last_page,
