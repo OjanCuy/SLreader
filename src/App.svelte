@@ -1,48 +1,43 @@
 <script lang="ts">
-  // Temporary start screen: proves the Rust bridge (T-02) and the theme and fonts (T-04).
-  // Replaced by the S-01 Libraries screen in T-09.
-  // In development it also shows the component gallery (T-05).
-  import { getAppInfo } from "./lib/api";
-  import SegmentedControl from "./lib/components/SegmentedControl.svelte";
-  import { applyTheme, THEME_OPTIONS, type ThemeChoice } from "./lib/theme";
+  import type { LibrarySummary } from "./lib/api";
+  import Button from "./lib/components/Button.svelte";
+  import ToastRegion from "./lib/components/ToastRegion.svelte";
+  import LibrariesScreen from "./screens/LibrariesScreen.svelte";
+  import WorkspacePlaceholder from "./screens/WorkspacePlaceholder.svelte";
 
-  const info = getAppInfo();
+  /** The open library; the Libraries screen is shown while there is none. */
+  let current = $state<LibrarySummary>();
 
-  // Dropped from release builds, because import.meta.env.DEV is false there.
-  const gallery = import.meta.env.DEV ? import("./gallery/Gallery.svelte") : null;
-
-  let theme = $state<ThemeChoice>("system");
-  $effect(() => applyTheme(theme));
+  // Component gallery (T-05), development only: import.meta.env.DEV is false in releases.
+  const gallery = import.meta.env.DEV ? () => import("./gallery/Gallery.svelte") : null;
+  let showGallery = $state(false);
 </script>
 
-<main>
-  {#await info then app}
-    <h1>{app.name}</h1>
-    <p class="version">{app.version}</p>
-  {/await}
-
-  <SegmentedControl label="Appearance" showLabel options={THEME_OPTIONS} bind:value={theme} />
-</main>
-
-{#if gallery}
-  {#await gallery then { default: Gallery }}
-    <Gallery />
-  {/await}
+{#if current}
+  <WorkspacePlaceholder library={current} onback={() => (current = undefined)} />
+{:else}
+  <LibrariesScreen onopen={(library) => (current = library)} />
 {/if}
 
+{#if gallery}
+  <div class="dev">
+    <Button variant="ghost" onclick={() => (showGallery = !showGallery)}>
+      Component gallery (dev)
+    </Button>
+  </div>
+  {#if showGallery}
+    {#await gallery() then { default: Gallery }}
+      <Gallery />
+    {/await}
+  {/if}
+{/if}
+
+<ToastRegion />
+
 <style>
-  main {
-    padding: var(--space-8);
-  }
-
-  h1 {
-    margin: 0;
-    font: var(--type-paper-title);
-  }
-
-  .version {
-    margin: var(--space-1) 0 var(--space-6);
-    color: var(--text-secondary);
-    font-variant-numeric: var(--type-numeric);
+  .dev {
+    max-width: 720px;
+    margin: var(--space-12) auto var(--space-3);
+    padding: 0 var(--panel-padding);
   }
 </style>

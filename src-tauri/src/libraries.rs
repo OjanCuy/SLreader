@@ -1,4 +1,5 @@
-//! Managing libraries (FR-14.1 to FR-14.3): create, open, rename, remove from the list.
+//! Managing libraries (FR-14.1 to FR-14.3, FR-14.5): create, open, rename, remove from
+//! the list, and point a missing one to its new folder.
 //!
 //! The app database only remembers folders (`library_registry`). Everything shown
 //! about a library is read from the library folder itself.
@@ -215,6 +216,33 @@ pub fn remove(app: &Connection, active: &mut Option<ActiveLibrary>, id: i64) -> 
     Ok(())
 }
 
+/// "Locate folder": points a list entry to the place the library moved to (FR-14.5).
+/// The folder must hold a readable library. Nothing in either folder is changed.
+pub fn locate(
+    app: &Connection,
+    active: &mut Option<ActiveLibrary>,
+    id: i64,
+    folder: &str,
+) -> Result<()> {
+    folder_of(app, id)?;
+    let folder = normalize(folder)?;
+    library::peek_library(&folder)?;
+    let path = path_text(&folder)?;
+
+    if find_registered(app, path)?.is_some_and(|other| other != id) {
+        // The new place is already in the list, so only the old entry is dropped.
+        return remove(app, active, id);
+    }
+    app.execute(
+        "UPDATE library_registry SET folder_path = ?1, missing = 0 WHERE id = ?2",
+        params![path, id],
+    )?;
+    if active.as_ref().is_some_and(|current| current.id == id) {
+        *active = None;
+    }
+    Ok(())
+}
+
 /// Records the opening time and swaps in the new active library.
 fn activate(
     app: &Connection,
@@ -248,21 +276,29 @@ fn normalize(folder: &str) -> Result<PathBuf> {
 
 /// Adds the folder to the list, or returns the id it already has.
 fn register(app: &Connection, folder: &Path) -> Result<i64> {
-    let path = folder
-        .to_str()
-        .ok_or_else(|| LibraryError::new(ErrorCode::Other, "the folder path is not valid Unicode"))?;
-    let rows: Vec<(i64, String)> = app
-        .prepare("SELECT id, folder_path FROM library_registry")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<std::result::Result<_, _>>()?;
-    if let Some((id, _)) = rows.iter().find(|(_, known)| same_path(known, path)) {
-        return Ok(*id);
+    let path = path_text(folder)?;
+    if let Some(id) = find_registered(app, path)? {
+        return Ok(id);
     }
     Ok(app.query_row(
         "INSERT INTO library_registry (folder_path) VALUES (?1) RETURNING id",
         [path],
         |r| r.get(0),
     )?)
+}
+
+fn path_text(folder: &Path) -> Result<&str> {
+    folder
+        .to_str()
+        .ok_or_else(|| LibraryError::new(ErrorCode::Other, "the folder path is not valid Unicode"))
+}
+
+fn find_registered(app: &Connection, path: &str) -> Result<Option<i64>> {
+    let rows: Vec<(i64, String)> = app
+        .prepare("SELECT id, folder_path FROM library_registry")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    Ok(rows.iter().find(|(_, known)| same_path(known, path)).map(|(id, _)| *id))
 }
 
 /// Windows paths ignore upper and lower case.
@@ -574,6 +610,61 @@ mod tests {
         let error = rename(&s.app, &mut s.active, id, "New").unwrap_err();
         assert_eq!(error.code, ErrorCode::NewerVersion);
         assert_eq!(s.list()[0].name.as_deref(), Some("A"));
+    }
+
+    #[test]
+    fn locate_points_a_moved_library_to_its_new_folder() {
+        let mut s = setup();
+        let folder = s.folder("a");
+        let id = s.create(&folder, "A").unwrap().id;
+        s.add_paper();
+        s.active = None;
+        let moved = format!("{folder}-moved");
+        std::fs::rename(&folder, &moved).unwrap();
+        s.list();
+
+        locate(&s.app, &mut s.active, id, &moved).unwrap();
+        assert!(!s.missing_flag(id));
+        let libraries = s.list();
+        assert_eq!(libraries.len(), 1);
+        assert_eq!(libraries[0].id, id);
+        assert_eq!(libraries[0].folder_path, moved);
+        assert_eq!(libraries[0].problem, None);
+        assert_eq!(libraries[0].paper_count, Some(1));
+    }
+
+    #[test]
+    fn locate_rejects_a_folder_without_a_readable_library() {
+        let mut s = setup();
+        let folder = s.folder("a");
+        let id = s.create(&folder, "A").unwrap().id;
+        let empty = s.folder("empty");
+        let broken = s.folder("broken");
+        std::fs::write(Path::new(&broken).join(LIBRARY_DB_FILE), "not a database").unwrap();
+
+        let error = locate(&s.app, &mut s.active, id, &empty).unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotFound);
+        let error = locate(&s.app, &mut s.active, id, &broken).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Damaged);
+        assert_eq!(s.list()[0].folder_path, folder);
+        assert_eq!(std::fs::read_dir(&empty).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn locating_a_folder_that_is_already_listed_drops_only_the_old_entry() {
+        let mut s = setup();
+        let (a, b) = (s.folder("a"), s.folder("b"));
+        let a_id = s.create(&a, "A").unwrap().id;
+        let b_id = s.create(&b, "B").unwrap().id;
+        let moved = format!("{a}-moved");
+        std::fs::rename(&a, &moved).unwrap();
+
+        locate(&s.app, &mut s.active, a_id, &b).unwrap();
+        let ids: Vec<i64> = s.list().iter().map(|l| l.id).collect();
+        assert_eq!(ids, [b_id]);
+        assert!(Path::new(&moved).join(LIBRARY_DB_FILE).is_file());
+        let error = locate(&s.app, &mut s.active, a_id, &b).unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotRegistered);
     }
 
     #[test]

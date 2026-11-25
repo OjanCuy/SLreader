@@ -15,8 +15,14 @@
   import Skeleton from "../lib/components/Skeleton.svelte";
   import TextArea from "../lib/components/TextArea.svelte";
   import TextField from "../lib/components/TextField.svelte";
-  import ToastRegion from "../lib/components/ToastRegion.svelte";
   import { showToast } from "../lib/components/toasts.svelte";
+  import { applyTheme, THEME_OPTIONS, type ThemeChoice } from "../lib/theme";
+
+  // Stays here until the Appearance settings exist (T-37).
+  let theme = $state<ThemeChoice>(
+    (document.documentElement.getAttribute("data-theme") as ThemeChoice | null) ?? "system",
+  );
+  $effect(() => applyTheme(theme));
 
   let toggled = $state(false);
   let page = $state("4");
@@ -39,6 +45,8 @@
 </script>
 
 <section>
+  <SegmentedControl label="Appearance" showLabel options={THEME_OPTIONS} bind:value={theme} />
+
   <h2>Button</h2>
   {#each ["primary", "secondary", "ghost", "danger"] as const as variant (variant)}
     <div class="row">
@@ -176,7 +184,6 @@
   {/snippet}
 </Dialog>
 
-<ToastRegion />
 
 <style>
   section {

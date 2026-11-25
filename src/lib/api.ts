@@ -64,3 +64,13 @@ export function renameLibrary(id: number, name: string): Promise<void> {
 export function removeLibrary(id: number): Promise<void> {
   return invoke("remove_library", { id });
 }
+
+/** "Locate folder": points a missing library to the folder it moved to. */
+export function locateLibrary(id: number, folderPath: string): Promise<void> {
+  return invoke("locate_library", { id, folderPath });
+}
+
+/** Shows the system folder picker. Resolves to null when the user cancels. */
+export function pickFolder(): Promise<string | null> {
+  return invoke("pick_folder");
+}

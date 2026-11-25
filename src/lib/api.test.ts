@@ -4,8 +4,10 @@ import {
   createLibrary,
   getAppInfo,
   listLibraries,
+  locateLibrary,
   openLibrary,
   openLibraryFolder,
+  pickFolder,
   removeLibrary,
   renameLibrary,
 } from "./api";
@@ -48,6 +50,8 @@ describe("library commands", () => {
     [() => openLibrary(1), ["open_library", { id: 1 }]],
     [() => renameLibrary(1, "N"), ["rename_library", { id: 1, name: "N" }]],
     [() => removeLibrary(1), ["remove_library", { id: 1 }]],
+    [() => locateLibrary(1, "C:/r"), ["locate_library", { id: 1, folderPath: "C:/r" }]],
+    [() => pickFolder(), ["pick_folder"]],
   ] as [() => Promise<unknown>, unknown[]][])("calls %#", async (call, expected) => {
     await call();
     expect(mockedInvoke).toHaveBeenCalledWith(...(expected as [string]));

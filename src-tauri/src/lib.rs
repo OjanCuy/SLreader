@@ -39,6 +39,7 @@ fn app_info() -> AppInfo {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // %APPDATA%\io.github.ojancuy.slreader on Windows.
             let data_dir = app.path().app_data_dir()?;
@@ -55,6 +56,8 @@ pub fn run() {
             commands::open_library,
             commands::rename_library,
             commands::remove_library,
+            commands::locate_library,
+            commands::pick_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
