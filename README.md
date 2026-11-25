@@ -70,3 +70,5 @@ Contributions are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
 ## License
 
 [MIT](LICENSE)
+
+The bundled fonts, [Inter](public/licenses/Inter-OFL.txt) and [Source Serif 4](public/licenses/SourceSerif4-OFL.txt), are licensed under the SIL Open Font License 1.1.

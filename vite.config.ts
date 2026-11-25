@@ -17,8 +17,11 @@ export default defineConfig({
   },
   build: {
     // WebView2 on Windows is Chromium-based.
-    target: "chrome120",
+    // 123 is the first version with the CSS light-dark() function used by the theme tokens.
+    target: "chrome123",
     outDir: "dist",
+    // Keep fonts as files: inlined data: URLs would be blocked by the CSP (font-src 'self').
+    assetsInlineLimit: 0,
   },
   test: {
     include: ["src/**/*.test.ts"],
