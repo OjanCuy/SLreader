@@ -44,7 +44,8 @@ pub struct OpenedLibrary {
 /// Opens the library in `folder` (PRD Section 8):
 /// - made by an older SLReader: migrated forward, after a backup copy;
 /// - made by a newer SLReader: opened read-only, never migrated down;
-/// - damaged, or not an SLReader library: `DbError::Damaged` / `NotSlreader`, file untouched.
+/// - damaged, or not an SLReader library: `DbError::Damaged` / `NotSlreader`, file untouched;
+/// - left half-saved by a crash: SQLite first rolls back to the last complete save.
 ///
 /// Never creates a database: a folder without one is `DbError::NotFound`.
 pub fn open_library(folder: &Path) -> Result<OpenedLibrary, DbError> {
@@ -551,5 +552,72 @@ mod tests {
         conn.execute("DELETE FROM library", []).unwrap();
         drop(conn);
         assert_damaged_and_untouched(&dir);
+    }
+
+    // ---- Crash in the middle of a save (hot journal) ----
+
+    /// Copies a library while a large save is half-written, which is what a crash or a
+    /// power cut leaves on disk: `library.sqlite` plus a `library.sqlite-journal`.
+    /// `before_crash` runs on the live library first. Returns the copy.
+    fn crashed_copy(before_crash: impl Fn(&Connection)) -> tempfile::TempDir {
+        let live = library_with_data();
+        let conn = open_library(live.path()).unwrap().conn;
+        before_crash(&conn);
+        // A tiny cache forces SQLite to write changed pages into the file mid-save.
+        conn.pragma_update(None, "cache_size", 2).unwrap();
+        conn.execute_batch("BEGIN; UPDATE paper SET title = 'half-saved';").unwrap();
+
+        let crashed = tempfile::tempdir().unwrap();
+        for entry in std::fs::read_dir(live.path()).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), crashed.path().join(entry.file_name())).unwrap();
+        }
+        conn.execute_batch("ROLLBACK;").unwrap();
+        assert!(
+            crashed.path().join("library.sqlite-journal").exists(),
+            "the simulated crash must leave a journal behind"
+        );
+        crashed
+    }
+
+    fn titles_marked_half_saved(conn: &Connection) -> i64 {
+        conn.query_row("SELECT count(*) FROM paper WHERE title = 'half-saved'", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_library_left_half_saved_by_a_crash_opens_at_its_last_complete_save() {
+        let dir = crashed_copy(|_| {});
+        let opened = open_library(dir.path()).unwrap();
+        assert_eq!(opened.read_only, None);
+        assert_eq!(count(&opened.conn, "paper"), 200);
+        assert_eq!(titles_marked_half_saved(&opened.conn), 0);
+        drop(opened);
+        assert_eq!(files_in(&dir), [LIBRARY_DB_FILE]);
+    }
+
+    #[test]
+    fn a_newer_library_left_half_saved_is_recovered_then_opened_read_only() {
+        let dir = crashed_copy(|conn| {
+            conn.pragma_update(None, "user_version", LIBRARY_SCHEMA.latest_version() + 1).unwrap();
+        });
+        let opened = open_library(dir.path()).unwrap();
+        assert_eq!(opened.read_only, Some(LibraryProblem::NewerVersion));
+        assert_eq!(count(&opened.conn, "paper"), 200);
+        assert_eq!(titles_marked_half_saved(&opened.conn), 0);
+        assert!(opened.conn.execute("DELETE FROM paper", []).is_err());
+    }
+
+    #[test]
+    fn another_programs_half_saved_database_is_left_alone() {
+        let dir = crashed_copy(|conn| {
+            conn.pragma_update(None, "application_id", 0x1234_5678).unwrap();
+        });
+        let journal = dir.path().join("library.sqlite-journal");
+        let (db_before, journal_before) = (db_bytes(&dir), std::fs::read(&journal).unwrap());
+
+        assert!(matches!(open_library(dir.path()), Err(DbError::NotSlreader)));
+        assert_eq!(db_bytes(&dir), db_before);
+        assert_eq!(std::fs::read(&journal).unwrap(), journal_before);
     }
 }

@@ -10,12 +10,14 @@
 //! - Before an existing database is migrated, a copy of it is saved next to it.
 //! - A file that is some other program's SQLite database is never changed.
 //! - `inspect` looks at an existing file read-only first, so a damaged or newer
-//!   database is recognised without writing anything to it (T-07).
+//!   database is recognised without writing anything to it (T-07). The one exception
+//!   is SQLite's own crash recovery: see `recover_hot_journal`.
 
 pub mod app;
 pub mod library;
 
 use std::fmt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, ErrorCode, OpenFlags};
@@ -140,6 +142,52 @@ pub(crate) fn open(path: &Path, schema: &Schema, create: bool) -> Result<Connect
 /// newer than this app knows. Errors: `NotSlreader`, `Damaged`, or a plain I/O or
 /// SQLite error (e.g. the file is locked).
 pub(crate) fn inspect(path: &Path, schema: &Schema) -> Result<(Connection, i64), DbError> {
+    match inspect_read_only(path, schema) {
+        Err(DbError::Sqlite(e)) if needs_crash_recovery(&e) => {
+            recover_hot_journal(path, schema)?;
+            inspect_read_only(path, schema)
+        }
+        other => other,
+    }
+}
+
+/// SQLite refuses to read a database with a "hot" journal (left by a crash or power
+/// loss in the middle of a save) through a read-only connection.
+fn needs_crash_recovery(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(err, _)
+        if err.extended_code == rusqlite::ffi::SQLITE_READONLY_ROLLBACK)
+}
+
+/// Lets SQLite finish its own crash recovery: the half-written save is undone and the
+/// database returns to its last complete save. Nothing the user saved is lost; only
+/// the unfinished change, which never counted as saved, is discarded.
+///
+/// This is the only write before the read-only check. It is skipped when the file
+/// header shows another program's database, or something that is not SQLite at all.
+fn recover_hot_journal(path: &Path, schema: &Schema) -> Result<(), DbError> {
+    let mut header = [0u8; 100];
+    if std::fs::File::open(path)?.read_exact(&mut header).is_err() {
+        return Err(DbError::Damaged("file shorter than a SQLite header".into()));
+    }
+    if &header[..16] != b"SQLite format 3\0" {
+        return Err(DbError::Damaged("not a SQLite file".into()));
+    }
+    // Bytes 68-71 hold PRAGMA application_id (big-endian). 0 means "not set yet",
+    // e.g. a crash during the very first save of a new library.
+    let application_id = i32::from_be_bytes([header[68], header[69], header[70], header[71]]);
+    if application_id != 0 && application_id != schema.application_id {
+        return Err(DbError::NotSlreader);
+    }
+
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = Connection::open_with_flags(path, flags)?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    // The first read takes a lock, and that is when SQLite rolls the journal back.
+    conn.query_row("SELECT count(*) FROM sqlite_schema", [], |row| row.get::<_, i64>(0))?;
+    Ok(())
+}
+
+fn inspect_read_only(path: &Path, schema: &Schema) -> Result<(Connection, i64), DbError> {
     let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let conn = Connection::open_with_flags(path, flags)?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
