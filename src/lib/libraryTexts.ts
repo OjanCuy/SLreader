@@ -6,6 +6,8 @@ import { LIBRARY_PROBLEMS } from "./libraryProblems";
 
 export const GENERIC_ERROR = "Something went wrong. Try again.";
 export const SAVE_ERROR = "Couldn't save: the disk is full or the folder is read-only.";
+export const CLOUD_WARNING =
+  "This folder is synced to the cloud. Syncing can damage the library database while SLReader is open.";
 export const NO_LIBRARY_HERE = "No SLReader library in this folder.";
 export const ALREADY_A_LIBRARY =
   "This folder already has a library. Use Open library instead.";
@@ -20,6 +22,8 @@ export function libraryErrorMessage(error: unknown, action: LibraryAction): stri
       return LIBRARY_PROBLEMS.damaged.message;
     case "newer_version":
       return LIBRARY_PROBLEMS.newer_version.message;
+    case "sync_conflict":
+      return LIBRARY_PROBLEMS.sync_conflict.message;
     case "already_exists":
       return ALREADY_A_LIBRARY;
     case "not_found":

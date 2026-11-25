@@ -1,11 +1,11 @@
 <!-- O-01: name and folder for a new library (FR-14.1). Mounted only while open. -->
 <script lang="ts">
-  import { createLibrary, pickFolder, type LibrarySummary } from "../lib/api";
+  import { createLibrary, isCloudFolder, pickFolder, type LibrarySummary } from "../lib/api";
   import Button from "../lib/components/Button.svelte";
   import Dialog from "../lib/components/Dialog.svelte";
   import InlineBanner from "../lib/components/InlineBanner.svelte";
   import TextField from "../lib/components/TextField.svelte";
-  import { libraryErrorMessage } from "../lib/libraryTexts";
+  import { CLOUD_WARNING, libraryErrorMessage } from "../lib/libraryTexts";
 
   interface Props {
     oncreated: (library: LibrarySummary) => void;
@@ -18,6 +18,7 @@
   let folder = $state("");
   let busy = $state(false);
   let error = $state<string>();
+  let cloud = $state(false);
 
   const ready = $derived(name.trim() !== "" && folder !== "");
 
@@ -27,6 +28,8 @@
       if (chosen !== null) {
         folder = chosen;
         error = undefined;
+        // Only a warning: if the check fails, creating is still possible.
+        cloud = await isCloudFolder(chosen).catch(() => false);
       }
     } catch (failure) {
       error = libraryErrorMessage(failure, "load");
@@ -60,6 +63,7 @@
     <div class="path"><TextField label="Folder" readonly value={folder} /></div>
     <Button onclick={chooseFolder}>Choose folder</Button>
   </div>
+  {#if cloud}<InlineBanner tone="warning" title={CLOUD_WARNING} />{/if}
   {#if error}<InlineBanner tone="error" title={error} />{/if}
 
   {#snippet actions()}

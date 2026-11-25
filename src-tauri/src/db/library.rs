@@ -60,8 +60,19 @@ pub fn peek_library(folder: &Path) -> Result<LibraryPeek, DbError> {
     Ok(LibraryPeek {
         name: conn.query_row("SELECT name FROM library", [], |r| r.get(0)).ok(),
         paper_count: conn.query_row("SELECT count(*) FROM paper", [], |r| r.get(0)).ok(),
-        problem: (version > LIBRARY_SCHEMA.latest_version()).then_some(LibraryProblem::NewerVersion),
+        problem: read_only_reason(folder, version),
     })
+}
+
+/// Why a readable library must not be edited, if there is a reason.
+fn read_only_reason(folder: &Path, version: i64) -> Option<LibraryProblem> {
+    if version > LIBRARY_SCHEMA.latest_version() {
+        Some(LibraryProblem::NewerVersion)
+    } else if crate::sync::has_conflict_copy(folder) {
+        Some(LibraryProblem::SyncConflict)
+    } else {
+        None
+    }
 }
 
 /// The read-only checks shared by opening and peeking. Returns the read-only
@@ -91,14 +102,15 @@ pub struct OpenedLibrary {
 /// - made by an older SLReader: migrated forward, after a backup copy;
 /// - made by a newer SLReader: opened read-only, never migrated down;
 /// - damaged, or not an SLReader library: `DbError::Damaged` / `NotSlreader`, file untouched;
-/// - left half-saved by a crash: SQLite first rolls back to the last complete save.
+/// - left half-saved by a crash: SQLite first rolls back to the last complete save;
+/// - next to a sync conflict copy of the database: opened read-only, not migrated.
 ///
 /// Never creates a database: a folder without one is `DbError::NotFound`.
 pub fn open_library(folder: &Path) -> Result<OpenedLibrary, DbError> {
     // Look first, read-only: nothing is written to a damaged or newer file.
     let (conn, version) = check_library(folder)?;
-    if version > LIBRARY_SCHEMA.latest_version() {
-        return Ok(OpenedLibrary { conn, read_only: Some(LibraryProblem::NewerVersion) });
+    if let Some(problem) = read_only_reason(folder, version) {
+        return Ok(OpenedLibrary { conn, read_only: Some(problem) });
     }
     drop(conn);
 
@@ -587,6 +599,37 @@ mod tests {
         conn.execute("DELETE FROM library", []).unwrap();
         drop(conn);
         assert_damaged_and_untouched(&dir);
+    }
+
+    // ---- T-11: sync conflict copies ----
+
+    #[test]
+    fn a_library_with_a_conflict_copy_opens_read_only_and_keeps_both_files() {
+        let dir = library_with_data();
+        let copy = dir.path().join("library (Ana's conflicted copy 2026-11-25).sqlite");
+        std::fs::write(&copy, "the other version").unwrap();
+        let before = db_bytes(&dir);
+
+        let opened = open_library(dir.path()).unwrap();
+        assert_eq!(opened.read_only, Some(LibraryProblem::SyncConflict));
+        assert_eq!(count(&opened.conn, "paper"), 200);
+        assert!(opened.conn.execute("DELETE FROM paper", []).is_err());
+        drop(opened);
+        assert_eq!(peek_library(dir.path()).unwrap().problem, Some(LibraryProblem::SyncConflict));
+        assert_eq!(db_bytes(&dir), before);
+        assert_eq!(std::fs::read_to_string(&copy).unwrap(), "the other version");
+
+        // The user sorts out the conflict; the library is editable again.
+        std::fs::remove_file(copy).unwrap();
+        assert_eq!(open_library(dir.path()).unwrap().read_only, None);
+    }
+
+    #[test]
+    fn a_migration_backup_does_not_make_a_library_read_only() {
+        let (dir, conn) = new_library();
+        drop(conn);
+        std::fs::write(dir.path().join("library-v1-backup.sqlite"), "backup").unwrap();
+        assert_eq!(open_library(dir.path()).unwrap().read_only, None);
     }
 
     // ---- Crash in the middle of a save (hot journal) ----

@@ -1,8 +1,9 @@
 // Fixed messages for library problems found by the Rust core (T-07).
-// Texts are copied from the design brief, Section 7, row "S-01 Libraries".
+// Texts are copied from the design brief, Section 7, row "S-01 Libraries",
+// and (sync_conflict) from PRD Section 8.
 // The keys match `LibraryProblem` in src-tauri/src/db/mod.rs.
 
-export type LibraryProblem = "newer_version" | "damaged" | "not_found";
+export type LibraryProblem = "newer_version" | "damaged" | "not_found" | "sync_conflict";
 
 export interface LibraryProblemText {
   message: string;
@@ -26,5 +27,9 @@ export const LIBRARY_PROBLEMS: Readonly<Record<LibraryProblem, LibraryProblemTex
     message: "Folder not found.",
     action: "Locate folder",
     readOnly: false,
+  },
+  sync_conflict: {
+    message: "A sync conflict was found. The library opened read-only.",
+    readOnly: true,
   },
 };

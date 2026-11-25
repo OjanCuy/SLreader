@@ -17,6 +17,7 @@ const library = (id: number, name: string, over: Partial<LibrarySummary> = {}): 
   paperCount: id,
   lastOpenedAt: null,
   problem: null,
+  cloudSynced: false,
   session: null,
   ...over,
 });

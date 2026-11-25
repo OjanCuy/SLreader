@@ -43,6 +43,8 @@ pub struct LibrarySummary {
     pub paper_count: Option<i64>,
     pub last_opened_at: Option<String>,
     pub problem: Option<LibraryProblem>,
+    /// The folder is synced to the cloud: show a warning (PRD Section 8).
+    pub cloud_synced: bool,
     /// Set only on the result of opening a library; needed to work with its data.
     pub session: Option<u64>,
 }
@@ -54,6 +56,8 @@ pub enum ErrorCode {
     NotFound,
     Damaged,
     NewerVersion,
+    /// Read-only because a sync conflict copy was found.
+    SyncConflict,
     /// The chosen folder already holds a library.
     AlreadyExists,
     InvalidName,
@@ -134,6 +138,7 @@ fn summarize(
         Err(e) => (None, None, e.library_problem()),
     };
     set_missing(app, id, problem == Some(LibraryProblem::NotFound))?;
+    let cloud_synced = crate::sync::is_cloud_folder(Path::new(&folder_path));
     Ok(LibrarySummary {
         id,
         folder_path,
@@ -141,6 +146,7 @@ fn summarize(
         paper_count,
         last_opened_at,
         problem,
+        cloud_synced,
         session: None,
     })
 }
@@ -220,8 +226,8 @@ pub fn rename(
             &temporary
         }
     };
-    if target.read_only.is_some() {
-        return Err(LibraryError::new(ErrorCode::NewerVersion, "the library is read-only"));
+    if let Some(problem) = target.read_only {
+        return Err(read_only_error(problem));
     }
     target.conn.execute("UPDATE library SET name = ?1", [name])?;
     Ok(())
@@ -298,10 +304,18 @@ pub fn library_for_reading(active: &Option<ActiveLibrary>, session: u64) -> Resu
 /// Like `library_for_reading`, but refuses a read-only library.
 pub fn library_for_writing(active: &Option<ActiveLibrary>, session: u64) -> Result<&Connection> {
     let current = current(active, session)?;
-    if current.library.read_only.is_some() {
-        return Err(LibraryError::new(ErrorCode::NewerVersion, "the library is read-only"));
+    if let Some(problem) = current.library.read_only {
+        return Err(read_only_error(problem));
     }
     Ok(&current.library.conn)
+}
+
+fn read_only_error(problem: LibraryProblem) -> LibraryError {
+    let code = match problem {
+        LibraryProblem::SyncConflict => ErrorCode::SyncConflict,
+        _ => ErrorCode::NewerVersion,
+    };
+    LibraryError::new(code, "the library is read-only")
 }
 
 fn current(active: &Option<ActiveLibrary>, session: u64) -> Result<&ActiveLibrary> {
@@ -802,11 +816,32 @@ mod tests {
     }
 
     #[test]
+    fn a_cloud_library_is_flagged_and_a_conflict_blocks_changes() {
+        let mut s = setup();
+        let folder = s.folder("Dropbox/review");
+        let plain = s.folder("plain");
+        assert!(!s.create(&plain, "Plain").unwrap().cloud_synced);
+        let created = s.create(&folder, "Cloud").unwrap();
+        assert!(created.cloud_synced);
+        assert_eq!(created.problem, None);
+
+        std::fs::write(Path::new(&folder).join("library (1).sqlite"), "x").unwrap();
+        let opened = open(&s.app, &mut s.active, created.id).unwrap();
+        assert_eq!(opened.problem, Some(LibraryProblem::SyncConflict));
+        let session = opened.session.unwrap();
+        assert!(library_for_reading(&s.active, session).is_ok());
+        let write = library_for_writing(&s.active, session).err().unwrap();
+        assert_eq!(write.code, ErrorCode::SyncConflict);
+        let renamed = rename(&s.app, &mut s.active, created.id, "New").unwrap_err();
+        assert_eq!(renamed.code, ErrorCode::SyncConflict);
+    }
+
+    #[test]
     fn the_ui_receives_the_field_names_and_codes_it_expects() {
         let mut s = setup();
         let folder = s.folder("a");
         let json = serde_json::to_value(s.create(&folder, "A").unwrap()).unwrap();
-        for field in ["id", "folderPath", "name", "paperCount", "lastOpenedAt", "problem", "session"] {
+        for field in ["id", "folderPath", "name", "paperCount", "lastOpenedAt", "problem", "cloudSynced", "session"] {
             assert!(json.get(field).is_some(), "{field} is missing");
         }
         let error = serde_json::to_value(s.create(&folder, "B").unwrap_err()).unwrap();

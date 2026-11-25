@@ -1,6 +1,7 @@
 mod commands;
 pub mod db;
 pub mod libraries;
+pub mod sync;
 
 use std::sync::Mutex;
 
@@ -58,6 +59,7 @@ pub fn run() {
             commands::remove_library,
             commands::locate_library,
             commands::pick_folder,
+            commands::is_cloud_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -17,6 +17,7 @@ const library = (over: Partial<LibrarySummary> = {}): LibrarySummary => ({
   paperCount: 12,
   lastOpenedAt: "2026-11-25T10:00:00.000Z",
   problem: null,
+  cloudSynced: false,
   session: null,
   ...over,
 });
@@ -201,6 +202,39 @@ describe("Libraries screen", () => {
     expect(await screen.findByText("Something went wrong. Try again.")).toBeTruthy();
     await fireEvent.click(button("Try again"));
     expect(await screen.findByText("Aquaculture")).toBeTruthy();
+  });
+});
+
+describe("cloud folders and sync conflicts", () => {
+  const WARNING =
+    "This folder is synced to the cloud. Syncing can damage the library database while SLReader is open.";
+
+  it("warns on the card of a synced library, which can still be opened", async () => {
+    await show([library({ cloudSynced: true })]);
+    expect(screen.getByText(WARNING)).toBeTruthy();
+    expect(button(/Aquaculture.*12 papers/s)).toBeTruthy();
+  });
+
+  it("explains a sync conflict, keeps the library openable, and blocks renaming", async () => {
+    await show([library({ problem: "sync_conflict", cloudSynced: true })]);
+    expect(
+      screen.getByText("A sync conflict was found. The library opened read-only."),
+    ).toBeTruthy();
+    expect(button(/Aquaculture.*12 papers/s)).toBeTruthy();
+    await fireEvent.click(button("Options for Aquaculture"));
+    const rename = await screen.findByRole("menuitem", { name: "Rename" });
+    expect((rename as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("warns in the create dialog as soon as a synced folder is chosen", async () => {
+    mocked.pickFolder.mockResolvedValue("C:\\OneDrive\\new");
+    mocked.isCloudFolder.mockResolvedValue(true);
+    await show([library()]);
+
+    await fireEvent.click(button("Create library"));
+    expect(screen.queryByText(WARNING)).toBeNull();
+    await fireEvent.click(button("Choose folder"));
+    expect(await screen.findByText(WARNING)).toBeTruthy();
   });
 });
 

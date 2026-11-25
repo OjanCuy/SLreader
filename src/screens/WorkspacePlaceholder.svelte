@@ -7,7 +7,7 @@
   import type { LibrarySummary } from "../lib/api";
   import InlineBanner from "../lib/components/InlineBanner.svelte";
   import { LIBRARY_PROBLEMS } from "../lib/libraryProblems";
-  import { libraryTitle, paperCountText } from "../lib/libraryTexts";
+  import { CLOUD_WARNING, libraryTitle, paperCountText } from "../lib/libraryTexts";
   import LibrarySwitcher from "./LibrarySwitcher.svelte";
 
   interface Props {
@@ -17,6 +17,8 @@
   }
 
   let { library, onswitch, onshowall }: Props = $props();
+
+  const problem = $derived(library.problem ? LIBRARY_PROBLEMS[library.problem] : null);
 </script>
 
 <header>
@@ -26,8 +28,11 @@
 <main>
   <h1>{libraryTitle(library)}</h1>
   {#if library.paperCount !== null}<p>{paperCountText(library.paperCount)}</p>{/if}
-  {#if library.problem === "newer_version"}
-    <InlineBanner tone="warning" title={LIBRARY_PROBLEMS.newer_version.message} />
+  {#if problem?.readOnly}
+    <InlineBanner tone="warning" title={problem.message} />
+  {/if}
+  {#if library.cloudSynced}
+    <InlineBanner tone="warning" title={CLOUD_WARNING} />
   {/if}
 </main>
 

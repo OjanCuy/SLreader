@@ -4,7 +4,12 @@
   import Icon from "../lib/components/Icon.svelte";
   import Menu, { type MenuItem } from "../lib/components/Menu.svelte";
   import { LIBRARY_PROBLEMS } from "../lib/libraryProblems";
-  import { lastOpenedText, libraryTitle, paperCountText } from "../lib/libraryTexts";
+  import {
+    CLOUD_WARNING,
+    lastOpenedText,
+    libraryTitle,
+    paperCountText,
+  } from "../lib/libraryTexts";
 
   interface Props {
     library: LibrarySummary;
@@ -64,6 +69,12 @@
         {#if library.problem === "not_found"}
           <Button onclick={onlocate}>Locate folder</Button>
         {/if}
+      </div>
+    {/if}
+    {#if library.cloudSynced && canOpen}
+      <div class="problem warning">
+        <Icon name="warning" />
+        <span>{CLOUD_WARNING}</span>
       </div>
     {/if}
   </div>

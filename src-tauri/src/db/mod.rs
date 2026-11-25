@@ -55,6 +55,8 @@ pub enum LibraryProblem {
     Damaged,
     /// "Folder not found." + "Locate folder" (FR-14.5).
     NotFound,
+    /// Opened read-only: "A sync conflict was found. The library opened read-only."
+    SyncConflict,
 }
 
 impl DbError {

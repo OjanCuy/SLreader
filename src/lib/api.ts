@@ -23,6 +23,8 @@ export interface LibrarySummary {
   /** UTC, ISO 8601. */
   lastOpenedAt: string | null;
   problem: LibraryProblem | null;
+  /** The folder is synced to the cloud: show a warning. */
+  cloudSynced: boolean;
   /** Set only on the result of opening a library; data commands will require it. */
   session: number | null;
 }
@@ -33,6 +35,7 @@ export interface LibraryError {
     | "not_found"
     | "damaged"
     | "newer_version"
+    | "sync_conflict"
     | "already_exists"
     | "invalid_name"
     | "not_registered"
@@ -76,4 +79,9 @@ export function locateLibrary(id: number, folderPath: string): Promise<void> {
 /** Shows the system folder picker. Resolves to null when the user cancels. */
 export function pickFolder(): Promise<string | null> {
   return invoke("pick_folder");
+}
+
+/** Whether to warn that a chosen folder is synced to the cloud. */
+export function isCloudFolder(folderPath: string): Promise<boolean> {
+  return invoke("is_cloud_folder", { folderPath });
 }

@@ -96,3 +96,9 @@ pub fn pick_folder(app: AppHandle, window: WebviewWindow) -> Option<String> {
         .and_then(|folder| folder.into_path().ok())
         .and_then(|path| path.to_str().map(String::from))
 }
+
+/// Whether to warn that this folder is synced to the cloud (PRD Section 8).
+#[tauri::command(async)]
+pub fn is_cloud_folder(folder_path: String) -> bool {
+    crate::sync::is_cloud_folder(std::path::Path::new(&folder_path))
+}

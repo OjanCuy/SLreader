@@ -14,6 +14,10 @@ describe("library problem texts", () => {
         readOnly: false,
       },
       not_found: { message: "Folder not found.", action: "Locate folder", readOnly: false },
+      sync_conflict: {
+        message: "A sync conflict was found. The library opened read-only.",
+        readOnly: true,
+      },
     });
   });
 });
