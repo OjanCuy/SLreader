@@ -187,6 +187,45 @@ export function extractLockedPaperText(session: number, paperId: string, passwor
   return invoke("extract_locked_paper_text", { session, paperId, password });
 }
 
+// ---- Highlights (FR-03.1, FR-03.2). Types mirror src-tauri/src/highlights.rs. ----
+
+/** green = supports inclusion, red = supports exclusion, blue = method, yellow = result. */
+export type HighlightColor = "green" | "red" | "blue" | "yellow";
+
+/** An area of a page as shares (0 to 1): left, top, width, height. */
+export interface HighlightRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface NewHighlight {
+  /** 1-based. */
+  page: number;
+  color: HighlightColor;
+  text: string;
+  rects: HighlightRect[];
+}
+
+export interface Highlight extends NewHighlight {
+  id: string;
+  note: string;
+  extractionTagId: string | null;
+  /** UTC, ISO 8601. */
+  createdAt: string;
+}
+
+/** The highlights of a paper, by page. */
+export function listHighlights(session: number, paperId: string): Promise<Highlight[]> {
+  return invoke("list_highlights", { session, paperId });
+}
+
+/** Saves a new highlight. Rejects for a read-only library. */
+export function addHighlight(session: number, paperId: string, highlight: NewHighlight): Promise<Highlight> {
+  return invoke("add_highlight", { session, paperId, highlight });
+}
+
 /** Shows the system file picker for one PDF. Null when the user cancels. */
 export function pickPdf(): Promise<string | null> {
   return invoke("pick_pdf");

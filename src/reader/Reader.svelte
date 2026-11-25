@@ -10,15 +10,19 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import {
+    addHighlight,
     attachPdf,
     extractLockedPaperText,
     getLastPage,
     getPageMode,
+    listHighlights,
     pickPdf,
     readPaperPdf,
     saveLastPage,
     setPageMode,
+    type Highlight,
     type LibraryError,
+    type NewHighlight,
     type PageMode,
   } from "../lib/api";
   import Button from "../lib/components/Button.svelte";
@@ -27,7 +31,8 @@
   import Spinner from "../lib/components/Spinner.svelte";
   import { showToast } from "../lib/components/toasts.svelte";
   import { attachMessage } from "../lib/importTexts";
-  import { libraryErrorMessage } from "../lib/libraryTexts";
+  import { libraryErrorMessage, SAVE_ERROR } from "../lib/libraryTexts";
+  import { crossPageMessage } from "./highlights";
   import { createPageSaver, type PageSaver } from "./pageSaver";
   import PasswordDialog from "./PasswordDialog.svelte";
   import PdfView from "./PdfView.svelte";
@@ -87,6 +92,32 @@
     setPageMode(next)?.catch((failure) => console.error("The page mode was not saved", failure));
   }
 
+  /** The highlights of the open paper (FR-03.2). */
+  let highlights = $state.raw<Highlight[]>([]);
+
+  /** The PDF still opens when its highlights cannot be read. */
+  async function storedHighlights(id: string): Promise<Highlight[]> {
+    try {
+      return await listHighlights(session, id);
+    } catch (failure) {
+      console.error("The highlights could not be read", failure);
+      return [];
+    }
+  }
+
+  /** Saves a highlight; on failure the user can try again (PRD Section 8). */
+  async function saveHighlight(id: string, highlight: NewHighlight, crossed: boolean) {
+    try {
+      const saved = await addHighlight(session, id, highlight);
+      if (paperId === id) highlights = [...highlights, saved];
+      if (crossed) showToast(crossPageMessage(highlight.page));
+    } catch {
+      showToast(SAVE_ERROR, "error", [
+        { label: "Try again", onselect: () => saveHighlight(id, highlight, crossed) },
+      ]);
+    }
+  }
+
   /** The first page is a fine place to start when the stored one cannot be read. */
   async function lastPage(id: string): Promise<number> {
     try {
@@ -111,6 +142,7 @@
       return;
     }
     view = { kind: "loading" };
+    highlights = [];
     let stopped = false;
     let opened: OpenedPdf | undefined;
     // Bound to this paper, so a late save never goes to another one.
@@ -124,10 +156,15 @@
 
     (async () => {
       try {
-        const [bytes, startPage] = await Promise.all([readPaperPdf(session, id), lastPage(id)]);
+        const [bytes, startPage, stored] = await Promise.all([
+          readPaperPdf(session, id),
+          lastPage(id),
+          storedHighlights(id),
+        ]);
         if (stopped) return;
         opened = await openPdf(bytes, tried);
         if (stopped) return opened.close();
+        highlights = stored;
         view = { kind: "ready", pdf: opened, startPage, saver };
         askingPassword = false;
         wrongPassword = false;
@@ -199,6 +236,10 @@
         onpagechange={view.saver.change}
         {mode}
         onmode={chooseMode}
+        {highlights}
+        onhighlight={readOnly
+          ? undefined
+          : (highlight, crossed) => paperId && saveHighlight(paperId, highlight, crossed)}
       />
     {/key}
   {:else if view.kind === "loading"}

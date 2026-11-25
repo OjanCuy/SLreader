@@ -1,6 +1,7 @@
 mod commands;
 pub mod db;
 pub mod extraction;
+pub mod highlights;
 pub mod libraries;
 pub mod papers;
 pub mod settings;
@@ -80,6 +81,8 @@ pub fn run() {
             commands::read_paper_pdf,
             commands::attach_pdf,
             commands::extract_locked_paper_text,
+            commands::list_highlights,
+            commands::add_highlight,
             commands::delete_paper,
             commands::get_last_page,
             commands::save_last_page,

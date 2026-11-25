@@ -8,6 +8,7 @@ use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::extraction::Extraction;
+use crate::highlights::{self, Highlight, NewHighlight};
 use crate::libraries::{self, LibraryError, LibrarySummary};
 use crate::papers::{self, ImportOutcome, ImportReport, PaperListItem};
 use crate::settings::{self, PageMode};
@@ -257,6 +258,31 @@ pub fn save_last_page(
     let current = lock(&current.0);
     let (conn, _) = libraries::library_and_folder_for_writing(&current, session)?;
     papers::save_last_page(conn, &paper_id, page)
+}
+
+/// The highlights of a paper, by page (FR-03.2).
+#[tauri::command(async)]
+pub fn list_highlights(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paper_id: String,
+) -> Result<Vec<Highlight>, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_reading(&current, session)?;
+    highlights::list_highlights(conn, &paper_id)
+}
+
+/// Saves a highlight the user just made (FR-03.1). Refused for a read-only library.
+#[tauri::command(async)]
+pub fn add_highlight(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paper_id: String,
+    highlight: NewHighlight,
+) -> Result<Highlight, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    highlights::add_highlight(conn, &paper_id, &highlight)
 }
 
 /// The page mode, an app setting shared by all libraries (FR-02.2).

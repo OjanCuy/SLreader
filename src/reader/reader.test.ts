@@ -5,10 +5,15 @@ import * as api from "../lib/api";
 import { dismissToast, toasts } from "../lib/components/toasts.svelte";
 import ToastRegion from "../lib/components/ToastRegion.svelte";
 import { attachMessage } from "../lib/importTexts";
+import { SAVE_ERROR } from "../lib/libraryTexts";
 import * as pdfjs from "./pdfjs";
 import Reader from "./Reader.svelte";
+import * as selection from "./selection";
 
 vi.mock("../lib/api");
+// jsdom has no layout to measure a selection; selection.test.ts covers the measuring.
+vi.mock("./selection");
+const readSelection = vi.mocked(selection.readSelection);
 vi.mock("./pdfjs", async (original) => ({
   ...(await original<typeof import("./pdfjs")>()),
   openPdf: vi.fn(),
@@ -225,6 +230,140 @@ describe("password-protected PDF (PRD Section 8)", () => {
     expect(pdfjs.problemOf(passwordException(2))).toBe("wrong_password");
     expect(pdfjs.problemOf(Object.assign(new Error("x"), { name: "InvalidPDFException" }))).toBe("damaged");
     expect(pdfjs.problemOf(null)).toBe("damaged");
+  });
+});
+
+describe("highlights (FR-03.1, FR-03.2, FR-03.5)", () => {
+  const SELECTED: selection.PageSelection = {
+    page: 1,
+    text: "Feed conversion ratio was 1.4",
+    rects: [{ x: 0.1, y: 0.2, w: 0.5, h: 0.02 }],
+    crossed: false,
+    bounds: { left: 100, top: 200, right: 400, bottom: 212 },
+  };
+
+  beforeEach(() => {
+    mocked.listHighlights.mockResolvedValue([]);
+    mocked.addHighlight.mockImplementation(async (_session, _paper, highlight) => ({
+      ...highlight,
+      id: `h-${highlight.color}`,
+      note: "",
+      extractionTagId: null,
+      createdAt: "2026-11-26T00:00:00Z",
+    }));
+  });
+
+  async function open(props: Partial<{ readOnly: boolean }> = {}) {
+    const view = show(props);
+    await screen.findByText("/ 3");
+    return view;
+  }
+
+  /** The user releases the mouse after selecting text. */
+  async function selectText(selected: selection.PageSelection | null = SELECTED) {
+    readSelection.mockReturnValue(selected);
+    await fireEvent.pointerUp(document);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  const colorButton = (name: string) => screen.queryByRole("button", { name });
+
+  it("offers the 4 colors for a selection and saves the picked one", async () => {
+    await open();
+    expect(colorButton("Method")).toBeNull();
+    await selectText();
+    for (const name of ["Inclusion", "Exclusion", "Method", "Result"]) expect(colorButton(name)).toBeTruthy();
+
+    await fireEvent.click(colorButton("Method")!);
+    expect(mocked.addHighlight).toHaveBeenCalledExactlyOnceWith(7, "p1", {
+      page: 1,
+      color: "blue",
+      text: "Feed conversion ratio was 1.4",
+      rects: SELECTED.rects,
+    });
+    expect(colorButton("Method")).toBeNull();
+    const mark = await screen.findByRole("img", { name: "Highlight, method, page 1" });
+    const piece = mark.querySelector<HTMLElement>(".hl-rect")!;
+    expect([piece.style.left, piece.style.top, piece.style.width, piece.style.height]).toEqual([
+      "10%",
+      "20%",
+      "50%",
+      "2%",
+    ]);
+  });
+
+  it("picks with the keys 1–4 and closes with Esc", async () => {
+    await open();
+    await selectText();
+    await fireEvent.keyDown(window, { key: "4" });
+    expect(mocked.addHighlight).toHaveBeenLastCalledWith(7, "p1", expect.objectContaining({ color: "yellow" }));
+
+    await selectText();
+    await fireEvent.keyDown(window, { key: "Escape" });
+    expect(colorButton("Inclusion")).toBeNull();
+    await fireEvent.keyDown(window, { key: "1" });
+    expect(mocked.addHighlight).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not take keys typed in a field", async () => {
+    await open();
+    await selectText();
+    await fireEvent.keyDown(screen.getByLabelText("Page"), { key: "2" });
+    expect(mocked.addHighlight).not.toHaveBeenCalled();
+  });
+
+  it("says when a selection over two pages was saved on the first page only", async () => {
+    await open();
+    await selectText({ ...SELECTED, crossed: true });
+    await fireEvent.click(colorButton("Exclusion")!);
+    expect(await screen.findByText("Highlights can't cross pages; saved on page 1.")).toBeTruthy();
+    expect(mocked.addHighlight).toHaveBeenCalledWith(7, "p1", expect.objectContaining({ page: 1, color: "red" }));
+  });
+
+  it("keeps the highlight to try again when saving fails", async () => {
+    await open();
+    mocked.addHighlight.mockRejectedValueOnce({ code: "other", detail: "disk full" });
+    await selectText();
+    await fireEvent.click(colorButton("Inclusion")!);
+    expect(await screen.findByText(SAVE_ERROR)).toBeTruthy();
+    expect(screen.queryByRole("img", { name: /^Highlight/ })).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByRole("img", { name: "Highlight, supports inclusion, page 1" })).toBeTruthy();
+    expect(mocked.addHighlight).toHaveBeenCalledTimes(2);
+    expect(mocked.addHighlight.mock.calls[0]).toEqual(mocked.addHighlight.mock.calls[1]);
+  });
+
+  it("offers no colors in a read-only library", async () => {
+    await open({ readOnly: true });
+    await selectText();
+    expect(colorButton("Inclusion")).toBeNull();
+    expect(mocked.addHighlight).not.toHaveBeenCalled();
+  });
+
+  it("shows the stored highlights when the paper is opened again", async () => {
+    mocked.listHighlights.mockResolvedValue([
+      {
+        id: "h1",
+        page: 2,
+        color: "red",
+        text: "Pond trial",
+        rects: [{ x: 0.1, y: 0.5, w: 0.3, h: 0.02 }],
+        note: "",
+        extractionTagId: null,
+        createdAt: "2026-11-25T00:00:00Z",
+      },
+    ]);
+    await open();
+    expect(mocked.listHighlights).toHaveBeenCalledWith(7, "p1");
+    expect(await screen.findByRole("img", { name: "Highlight, supports exclusion, page 2" })).toBeTruthy();
+  });
+
+  it("opens the PDF even when the highlights cannot be read", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mocked.listHighlights.mockRejectedValue({ code: "other", detail: "busy" });
+    await open();
+    expect(screen.queryByRole("img", { name: /^Highlight/ })).toBeNull();
   });
 });
 

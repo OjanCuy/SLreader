@@ -5,11 +5,16 @@
   Search covers every page, also the ones not drawn (FR-02.1); Ctrl+F opens it.
   Mounted once per opened PDF, so zoom and search start fresh for each paper; the
   view starts at `startPage` and reports the pages read after that (FR-02.3).
+  Selecting text opens the highlight popover (O-03, FR-03.1) unless `onhighlight` is
+  missing (read-only library).
 -->
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import type { PageMode } from "../lib/api";
+  import type { Highlight, HighlightColor, NewHighlight, PageMode } from "../lib/api";
   import SearchField from "../lib/components/SearchField.svelte";
+  import HighlightPopover from "./HighlightPopover.svelte";
+  import { groupHighlights, HIGHLIGHT_KINDS } from "./highlights";
+  import { readSelection, type PageSelection } from "./selection";
   import {
     clampZoom,
     currentPage,
@@ -44,9 +49,24 @@
     onpagechange?: (page: number) => void;
     mode?: PageMode;
     onmode?: (mode: PageMode) => void;
+    /** The paper's highlights, drawn on their pages (FR-03.2). */
+    highlights?: Highlight[];
+    /**
+     * The user picked a color for a selection. `crossed`: the selection went past its
+     * first page, and only that page is kept (FR-03.5).
+     */
+    onhighlight?: (highlight: NewHighlight, crossed: boolean) => void;
   }
 
-  let { pdf, startPage = 1, onpagechange, mode = "normal", onmode }: Props = $props();
+  let {
+    pdf,
+    startPage = 1,
+    onpagechange,
+    mode = "normal",
+    onmode,
+    highlights = [],
+    onhighlight,
+  }: Props = $props();
 
   let zoom = $state(1);
   /** "Fit width" stays on until the user zooms: it follows the window size (Brief Section 9). */
@@ -190,13 +210,75 @@
 
   /** Ctrl+F, instead of the web view's own search, which only sees the drawn pages. */
   function onshortcut(event: KeyboardEvent) {
+    if (picking && pickByKey(event)) return;
     if (!event.ctrlKey || event.altKey || event.shiftKey || event.key.toLowerCase() !== "f") return;
     event.preventDefault();
     searchField.focus();
   }
+
+  // ---- Highlights (FR-03.1, FR-03.2, FR-03.5) ----
+
+  const highlightsByPage = $derived(groupHighlights(highlights));
+
+  /** The selection the popover is open for. */
+  let picking = $state.raw<PageSelection | null>(null);
+
+  /** Opens the popover for the current selection, or closes it when there is none. */
+  function checkSelection() {
+    if (!onhighlight) return;
+    picking = readSelection(window.getSelection(), scroller);
+  }
+
+  /** After the mouse is released the selection is final. */
+  function onpointerup() {
+    setTimeout(checkSelection);
+  }
+
+  /** Selecting with Shift and the arrow keys. */
+  function onkeyup(event: KeyboardEvent) {
+    if (event.shiftKey || event.key === "Shift") checkSelection();
+  }
+
+  function pick(color: HighlightColor) {
+    const chosen = picking;
+    picking = null;
+    if (!chosen) return;
+    window.getSelection()?.removeAllRanges();
+    onhighlight?.({ page: chosen.page, color, text: chosen.text, rects: chosen.rects }, chosen.crossed);
+  }
+
+  /** Keys 1–4 pick a color and Esc closes, while the popover is open (Brief O-03). */
+  function pickByKey(event: KeyboardEvent): boolean {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest("input, textarea, select, [contenteditable]")) return false;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      picking = null;
+      return true;
+    }
+    if (event.ctrlKey || event.altKey || event.metaKey) return false;
+    const kind = HIGHLIGHT_KINDS.find((each) => each.key === event.key);
+    if (!kind) return false;
+    event.preventDefault();
+    pick(kind.color);
+    return true;
+  }
+
+  function onselectionchange() {
+    // The selection went away (a click elsewhere, the page redrawn at a new zoom).
+    if (picking && (window.getSelection()?.isCollapsed ?? true)) picking = null;
+  }
+
+  function onscroll() {
+    scrollTop = scroller.scrollTop;
+    // Follow the selection; it is gone when its page is no longer drawn.
+    if (picking) checkSelection();
+  }
 </script>
 
 <svelte:window onkeydown={onshortcut} />
+<!-- On the document: a selection may end outside the pages. -->
+<svelte:document {onselectionchange} {onpointerup} {onkeyup} />
 
 <div class="pdf-view">
   <ReaderToolbar
@@ -232,7 +314,7 @@
     bind:this={scroller}
     bind:clientWidth={viewWidth}
     bind:clientHeight={viewHeight}
-    onscroll={() => (scrollTop = scroller.scrollTop)}
+    {onscroll}
   >
     <div class="column" style:height="{layout.height}px" style:min-width="{layout.width}px">
       {#each layout.pages as box, slot (slot)}
@@ -249,6 +331,7 @@
               number={slot + 1}
               {zoom}
               {mode}
+              highlights={highlightsByPage.get(slot + 1)}
               matches={matchesByPage.get(slot)}
               active={active?.page === slot ? active : null}
               reveal={active?.page === slot ? reveal : 0}
@@ -259,6 +342,9 @@
       {/each}
     </div>
   </div>
+  {#if picking}
+    <HighlightPopover bounds={picking.bounds} onpick={pick} />
+  {/if}
 </div>
 
 <style>

@@ -7,7 +7,8 @@
 <script lang="ts">
   import { TextLayer, type PDFDocumentProxy, type RenderTask } from "pdfjs-dist";
   import { untrack } from "svelte";
-  import type { PageMode } from "../lib/api";
+  import type { Highlight, PageMode } from "../lib/api";
+  import { highlightName, kindOf } from "./highlights";
   import { canvasPixelRatio, CSS_PER_POINT, type Box } from "./layout";
   import { isCancelled } from "./pdfjs";
   import { segments, type Match } from "./search";
@@ -27,6 +28,8 @@
     reveal?: number;
     /** Where the current result is on the page, once it can be measured. */
     onactive?: (box: Box) => void;
+    /** The highlights on this page (FR-03.2). */
+    highlights?: Highlight[];
   }
 
   let {
@@ -34,6 +37,7 @@
     number,
     zoom,
     mode = "normal",
+    highlights = [],
     matches = [],
     active = null,
     reveal = 0,
@@ -146,8 +150,34 @@
   }
 </script>
 
-<div class="page {mode}" bind:this={pageElement} style:--total-scale-factor={zoom * CSS_PER_POINT}>
+<div
+  class="page {mode}"
+  data-page={number}
+  bind:this={pageElement}
+  style:--total-scale-factor={zoom * CSS_PER_POINT}
+>
   <div class="canvas" bind:this={canvasHost}></div>
+  <!-- HighlightMark: shares of the page, so they fit every zoom. Below the text too. -->
+  <div class="highlights">
+    {#each highlights as highlight (highlight.id)}
+      <div
+        class="highlight {kindOf(highlight.color).token}"
+        role="img"
+        aria-label={highlightName(highlight.color, highlight.page)}
+        data-highlight={highlight.id}
+      >
+        {#each highlight.rects as rect, index (index)}
+          <div
+            class="hl-rect"
+            style:left="{rect.x * 100}%"
+            style:top="{rect.y * 100}%"
+            style:width="{rect.w * 100}%"
+            style:height="{rect.h * 100}%"
+          ></div>
+        {/each}
+      </div>
+    {/each}
+  </div>
   <!-- Below the transparent text, so selecting text is not affected. -->
   <div class="marks" aria-hidden="true">
     {#each marks as mark, index (index)}
@@ -196,11 +226,39 @@
     mix-blend-mode: multiply;
   }
 
+  .highlights,
+  .highlight,
   .marks {
     position: absolute;
     inset: 0;
     overflow: clip;
     pointer-events: none;
+  }
+
+  .hl-rect {
+    position: absolute;
+    mix-blend-mode: multiply;
+  }
+
+  .include .hl-rect {
+    background: var(--hl-include-fill);
+  }
+
+  .exclude .hl-rect {
+    background: var(--hl-exclude-fill);
+  }
+
+  .method .hl-rect {
+    background: var(--hl-method-fill);
+  }
+
+  .result .hl-rect {
+    background: var(--hl-result-fill);
+  }
+
+  /* On a dark page "multiply" would hide them (Brief Section 3, T-18). */
+  .dark .hl-rect {
+    mix-blend-mode: normal;
   }
 
   .mark {
