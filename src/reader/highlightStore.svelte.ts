@@ -91,6 +91,29 @@ export function createHighlightStore() {
     }
   }
 
+  /**
+   * Reads the tags again after Settings. A deleted tag is already gone from the
+   * database, so it is also dropped from the cards and from what is unsaved.
+   */
+  async function refreshTags(): Promise<void> {
+    if (session < 0) return;
+    let names: ExtractionTag[];
+    try {
+      names = (await listExtractionTags(session)) ?? [];
+    } catch (failure) {
+      console.error("The tags could not be read", failure);
+      return;
+    }
+    const gone = (id: string | null) => id !== null && !names.some((tag) => tag.id === id);
+    for (const { edit } of unsaved.values()) {
+      if (gone(edit.extractionTagId)) edit.extractionTagId = null;
+    }
+    tags = names;
+    highlights = highlights.map((each) =>
+      gone(each.extractionTagId) ? { ...each, extractionTagId: null } : each,
+    );
+  }
+
   async function add(highlight: NewHighlight, crossed: boolean): Promise<void> {
     if (paperId !== null) await addTo(session, paperId, highlight, crossed);
   }
@@ -240,6 +263,7 @@ export function createHighlightStore() {
       return saved;
     },
     open,
+    refreshTags,
     close: () => reset(null),
     add,
     edit,

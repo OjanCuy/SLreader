@@ -37,7 +37,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 async function show(readOnly = false, listeners: Parameters<typeof createDecisionStore>[0] = {}) {
   const store = createDecisionStore(listeners);
   const ondelete = vi.fn();
-  render(DecisionPanel, { store, name: "kim-2021.pdf", readOnly, ondelete });
+  render(DecisionPanel, { store, name: "kim-2021.pdf", readOnly, ondelete, onsettings: vi.fn() });
   await store.open(7, "p1");
   await tick();
   return { store, ondelete };
@@ -333,5 +333,25 @@ describe("metadata (FR-05.1, FR-05.4)", () => {
     for (const label of ["Reference No", "Year", "Title", "Source database", "DOI"]) {
       expect(field(label).readOnly).toBe(true);
     }
+  });
+});
+
+describe("after Settings (FR-08.1)", () => {
+  it("drops a deleted reason, also from a change that could not be saved", async () => {
+    mocked.getScreening.mockResolvedValue({ decision: "exclude", exclusionReasonId: null, assessmentNote: "" });
+    mocked.setExclusionReason.mockRejectedValue(new Error("disk full"));
+    const { store } = await show();
+    const id = store.reasons[0]!.id;
+    await store.chooseReason(id);
+    expect(store.saveFailed).toBe(true);
+
+    mocked.listExclusionReasons.mockResolvedValue([]);
+    await store.refreshReasons();
+    expect(store.screening?.exclusionReasonId).toBeNull();
+    expect(store.screening?.decision).toBe("exclude");
+    await store.retry();
+    expect(store.saveFailed).toBe(false);
+    expect(mocked.setExclusionReason).toHaveBeenCalledOnce();
+    expect(mocked.setDecision).not.toHaveBeenCalled();
   });
 });

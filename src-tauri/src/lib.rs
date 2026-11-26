@@ -1,4 +1,5 @@
 mod commands;
+pub mod criteria;
 pub mod db;
 pub mod decisions;
 pub mod extraction;
@@ -100,6 +101,14 @@ pub fn run() {
             commands::set_metadata,
             commands::import_references,
             commands::pick_reference_file,
+            commands::list_criteria,
+            commands::add_criterion,
+            commands::update_criterion,
+            commands::count_criterion_uses,
+            commands::delete_criterion,
+            commands::reorder_criteria,
+            commands::get_research_questions,
+            commands::set_research_questions,
             commands::delete_paper,
             commands::get_last_page,
             commands::save_last_page,

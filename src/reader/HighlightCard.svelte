@@ -5,6 +5,7 @@
 -->
 <script lang="ts">
   import type { ExtractionTag, Highlight, HighlightCategory } from "../lib/api";
+  import Button from "../lib/components/Button.svelte";
   import IconButton from "../lib/components/IconButton.svelte";
   import Icon from "../lib/components/Icon.svelte";
   import Select from "../lib/components/Select.svelte";
@@ -24,6 +25,8 @@
     onnote: (note: string) => void;
     onnotedone: () => void;
     ondelete: () => void;
+    /** Opens Settings at the extraction tags. */
+    onsettings: () => void;
   }
 
   let {
@@ -39,6 +42,7 @@
     onnote,
     onnotedone,
     ondelete,
+    onsettings,
   }: Props = $props();
 
   const id = $props.id();
@@ -119,10 +123,12 @@
     label="Tag"
     {options}
     value={highlight.extractionTagId ?? ""}
-    hint={tags.length === 0 ? "Add in Settings" : undefined}
     disabled={readOnly}
     onchange={(event) => ontag(event.currentTarget.value || null)}
   />
+  {#if tags.length === 0}
+    <div><Button variant="ghost" onclick={onsettings}>Add in Settings</Button></div>
+  {/if}
 
   <TextArea
     label="Note"

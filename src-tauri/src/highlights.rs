@@ -116,8 +116,8 @@ pub struct HighlightEdit {
     pub note: String,
 }
 
-/// An extraction tag of the library, for the tag choice of a highlight. Managing
-/// tags is T-35.
+/// An extraction tag of the library, for the tag choice of a highlight. Tags are
+/// managed in `criteria.rs`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExtractionTag {
     pub id: String,

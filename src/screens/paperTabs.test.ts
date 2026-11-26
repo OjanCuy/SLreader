@@ -126,6 +126,33 @@ describe("the paper's tabs (Brief Section 6, S-02)", () => {
     expect(mocked.getSummary).toHaveBeenLastCalledWith(7);
   });
 
+  it("opens Settings from Add in Settings and shows the new reason on return (FR-08.1)", async () => {
+    mocked.listCriteria.mockResolvedValue([]);
+    mocked.addCriterion.mockResolvedValue("r1");
+    mocked.setExclusionReason.mockResolvedValue();
+    show();
+    await open("a.pdf");
+    await vi.waitFor(() => expect(radio("Undecided").checked).toBe(true));
+    await fireEvent.click(radio("Exclude"));
+    await fireEvent.click(await screen.findByRole("button", { name: "Add in Settings" }));
+    expect(
+      screen.getByRole("button", { name: "Exclusion criteria" }).getAttribute("aria-current"),
+    ).toBe("page");
+
+    await fireEvent.click(await screen.findByRole("button", { name: "Add" }));
+    const description = screen.getByRole("textbox", { name: "Description" });
+    await fireEvent.input(description, { target: { value: "Review" } });
+    mocked.listExclusionReasons.mockResolvedValue([{ id: "r1", code: "E1", label: "Review" }]);
+    // Leaving at once still saves what was typed.
+    await fireEvent.click(screen.getByRole("button", { name: "Back to reader" }));
+
+    expect(await screen.findByRole("option", { name: "E1 - Review" })).toBeTruthy();
+    expect(mocked.addCriterion).toHaveBeenCalledExactlyOnceWith(7, "exclusion", "E1", "Review");
+    expect(radio("Exclude").checked).toBe(true);
+    // Settings never writes a decision (FR-11.4).
+    expect(mocked.setDecision).toHaveBeenCalledOnce();
+  });
+
   it("shows a new title in the paper list once it is saved", async () => {
     show();
     await open("a.pdf");

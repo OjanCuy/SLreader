@@ -106,6 +106,31 @@ export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}
     }
   }
 
+  /**
+   * Reads the exclusion reasons again after Settings. A deleted reason is already gone
+   * from the database, so it is also dropped from the screen and from what is unsaved.
+   */
+  async function refreshReasons(): Promise<void> {
+    if (session < 0) return;
+    const mine = generation;
+    let choices: ExclusionReason[];
+    try {
+      choices = (await listExclusionReasons(session)) ?? [];
+    } catch (failure) {
+      console.error("The exclusion reasons could not be read", failure);
+      return;
+    }
+    const gone = (id: string | null | undefined) => !!id && !choices.some((reason) => reason.id === id);
+    for (const entry of unsaved.values()) {
+      if (gone(entry.changes.exclusionReasonId)) delete entry.changes.exclusionReasonId;
+    }
+    if (mine !== generation) return;
+    reasons = choices;
+    if (screening && gone(screening.exclusionReasonId)) {
+      screening = { ...screening, exclusionReasonId: null };
+    }
+  }
+
   /** Changes the open paper on screen and notes what has to be saved. */
   function change(changes: Changes): string | null {
     if (paperId === null || !screening || !metadata) return null;
@@ -271,6 +296,7 @@ export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}
       return failed.size > 0;
     },
     open,
+    refreshReasons,
     close: () => reset(null),
     decide,
     chooseReason,

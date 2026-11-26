@@ -5,7 +5,7 @@
   App.svelte mounts it again for every opened library, so no state carries over.
 -->
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import DecisionPanel from "../decision/DecisionPanel.svelte";
   import { createDecisionStore } from "../decision/decisionStore.svelte";
   import SummaryBar from "../decision/SummaryBar.svelte";
@@ -23,6 +23,7 @@
   import Button from "../lib/components/Button.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Icon from "../lib/components/Icon.svelte";
+  import IconButton from "../lib/components/IconButton.svelte";
   import InlineBanner from "../lib/components/InlineBanner.svelte";
   import ProgressBar from "../lib/components/ProgressBar.svelte";
   import TabBar, { tabId, tabPanelId } from "../lib/components/TabBar.svelte";
@@ -33,6 +34,9 @@
   import { createHighlightStore } from "../reader/highlightStore.svelte";
   import HighlightsPanel from "../reader/HighlightsPanel.svelte";
   import Reader from "../reader/Reader.svelte";
+  import SettingsScreen from "../settings/SettingsScreen.svelte";
+  import { createSettingsStore } from "../settings/settingsStore.svelte";
+  import type { SettingsSection } from "../settings/settingsTexts";
   import DeletePaperDialog from "./DeletePaperDialog.svelte";
   import DropZone from "./DropZone.svelte";
   import ImportReferencesDialog from "./ImportReferencesDialog.svelte";
@@ -61,6 +65,11 @@
     onsaved: () => refreshSummary(),
     onmetadatasaved: () => refresh(),
   });
+  const settings = createSettingsStore(() => session);
+  /** The Settings section on screen; null while the workspace is shown. */
+  let settingsSection = $state<SettingsSection | null>(null);
+  /** What had the focus when Settings opened. */
+  let settingsOpener: HTMLElement | null = null;
   /** The counts in the top bar (FR-04.5). */
   let summary = $state.raw<Summary | null>(null);
   let summaryRequest = 0;
@@ -93,10 +102,29 @@
     return () => {
       highlights.flush();
       decisions.dispose();
+      settings.dispose();
       questions.forEach(dismissToast);
       stop.then((unlisten) => unlisten()).catch(() => {});
     };
   });
+
+  function openSettings(section: SettingsSection = "questions") {
+    settingsOpener = document.activeElement as HTMLElement | null;
+    // A text selection would keep the highlight popover and its keys open.
+    window.getSelection()?.removeAllRanges();
+    highlights.flush();
+    decisions.flush();
+    settingsSection = section;
+  }
+
+  async function closeSettings() {
+    settingsSection = null;
+    await tick();
+    settingsOpener?.focus();
+    // The lists the workspace shows are read again once everything is saved.
+    await settings.flush();
+    await Promise.all([decisions.refreshReasons(), highlights.refreshTags(), refreshSummary()]);
+  }
 
   /** Only the answer to the latest request counts, so an older one cannot win. */
   async function refreshSummary() {
@@ -198,7 +226,7 @@
   </Button>
 {/snippet}
 
-<div class="workspace">
+<div class="workspace" inert={settingsSection !== null}>
   <header>
     <LibrarySwitcher current={library} {onswitch} {onshowall} />
     {#if summary}<SummaryBar {summary} />{/if}
@@ -207,6 +235,7 @@
       <Button disabled={problem?.readOnly} onclick={() => (importingReferences = true)}>
         Import references
       </Button>
+      <IconButton icon="settings" label="Settings" onclick={() => openSettings()} />
     </div>
   </header>
 
@@ -281,9 +310,14 @@
               name={selectedPaper.fileName ?? selectedPaper.title}
               readOnly={problem?.readOnly ?? false}
               ondelete={() => (confirming = selectedPaper)}
+              onsettings={() => openSettings("exclusion")}
             />
           {:else}
-            <HighlightsPanel store={highlights} readOnly={problem?.readOnly ?? false} />
+            <HighlightsPanel
+              store={highlights}
+              readOnly={problem?.readOnly ?? false}
+              onsettings={() => openSettings("tag")}
+            />
           {/if}
         </div>
       </aside>
@@ -304,7 +338,17 @@
   <ImportReferencesDialog {session} onclose={() => (importingReferences = false)} />
 {/if}
 
-<DropZone ondrop={importPaths} />
+{#if settingsSection !== null}
+  <SettingsScreen
+    store={settings}
+    bind:section={settingsSection}
+    readOnly={problem?.readOnly ?? false}
+    notice={problem?.message}
+    onclose={closeSettings}
+  />
+{:else}
+  <DropZone ondrop={importPaths} />
+{/if}
 
 <style>
   .workspace {

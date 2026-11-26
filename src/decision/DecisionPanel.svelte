@@ -22,9 +22,11 @@
     readOnly: boolean;
     /** Opens the "Delete paper?" dialog. */
     ondelete: () => void;
+    /** Opens Settings at the exclusion criteria. */
+    onsettings: () => void;
   }
 
-  let { store, name, readOnly, ondelete }: Props = $props();
+  let { store, name, readOnly, ondelete, onsettings }: Props = $props();
 
   const reasonOptions = $derived([
     { value: "", label: "No reason" },
@@ -67,10 +69,12 @@
           label="Exclusion reason"
           options={reasonOptions}
           value={store.screening.exclusionReasonId ?? ""}
-          hint={store.reasons.length === 0 ? "Add in Settings" : undefined}
           disabled={readOnly}
           onchange={(event) => store.chooseReason(event.currentTarget.value || null)}
         />
+        {#if store.reasons.length === 0}
+          <div><Button variant="ghost" onclick={onsettings}>Add in Settings</Button></div>
+        {/if}
       {/if}
 
       <TextArea

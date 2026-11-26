@@ -13,9 +13,11 @@
   interface Props {
     store: HighlightStore;
     readOnly: boolean;
+    /** Opens Settings at the extraction tags. */
+    onsettings: () => void;
   }
 
-  let { store, readOnly }: Props = $props();
+  let { store, readOnly, onsettings }: Props = $props();
 
   /** The highlight in the "Delete highlight?" dialog. */
   let confirming = $state.raw<Highlight | null>(null);
@@ -71,6 +73,7 @@
             onnote={(note) => store.editNote(highlight.id, note)}
             onnotedone={() => store.flush(highlight.id)}
             ondelete={() => (confirming = highlight)}
+            {onsettings}
           />
         {/each}
       </ul>

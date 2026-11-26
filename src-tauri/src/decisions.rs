@@ -48,7 +48,7 @@ pub struct Screening {
     pub assessment_note: String,
 }
 
-/// An exclusion reason of the library, for the reason choice. Managing them is T-35.
+/// An exclusion reason of the library, for the reason choice. They are managed in `criteria.rs`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExclusionReason {
     pub id: String,

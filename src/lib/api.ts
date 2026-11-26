@@ -374,6 +374,61 @@ export function pickReferenceFile(): Promise<ReferenceFile | null> {
   return invoke("pick_reference_file");
 }
 
+// ---- Library criteria (FR-08.1, FR-08.2, FR-08.4). Types mirror src-tauri/src/criteria.rs. ----
+
+/** Inclusion criteria, exclusion reasons, or extraction tags. */
+export type CriteriaKind = "inclusion" | "exclusion" | "tag";
+
+export interface Criterion {
+  id: string;
+  /** Empty for a tag. */
+  code: string;
+  /** The description, or the tag name. */
+  label: string;
+}
+
+export function listCriteria(session: number, kind: CriteriaKind): Promise<Criterion[]> {
+  return invoke("list_criteria", { session, kind });
+}
+
+/** Resolves to the id of the new item, added at the end of its list. */
+export function addCriterion(session: number, kind: CriteriaKind, code: string, label: string): Promise<string> {
+  return invoke("add_criterion", { session, kind, code, label });
+}
+
+export function updateCriterion(
+  session: number,
+  kind: CriteriaKind,
+  id: string,
+  code: string,
+  label: string,
+): Promise<void> {
+  return invoke("update_criterion", { session, kind, id, code, label });
+}
+
+/** How many papers use an exclusion reason, or highlights a tag. */
+export function countCriterionUses(session: number, kind: CriteriaKind, id: string): Promise<number> {
+  return invoke("count_criterion_uses", { session, kind, id });
+}
+
+/** Only call it after the user has confirmed. Papers and highlights are kept. */
+export function deleteCriterion(session: number, kind: CriteriaKind, id: string): Promise<void> {
+  return invoke("delete_criterion", { session, kind, id });
+}
+
+/** `ids` names every item of the list, in the new order. */
+export function reorderCriteria(session: number, kind: CriteriaKind, ids: string[]): Promise<void> {
+  return invoke("reorder_criteria", { session, kind, ids });
+}
+
+export function getResearchQuestions(session: number): Promise<string> {
+  return invoke("get_research_questions", { session });
+}
+
+export function setResearchQuestions(session: number, text: string): Promise<void> {
+  return invoke("set_research_questions", { session, text });
+}
+
 /** Shows the system file picker for one PDF. Null when the user cancels. */
 export function pickPdf(): Promise<string | null> {
   return invoke("pick_pdf");

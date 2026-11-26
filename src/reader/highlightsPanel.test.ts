@@ -55,7 +55,7 @@ afterEach(() => {
 async function show(readOnly = false) {
   const store = createHighlightStore();
   render(ToastRegion);
-  const view = render(HighlightsPanel, { store, readOnly });
+  const view = render(HighlightsPanel, { store, readOnly, onsettings: vi.fn() });
   await store.open(7, "p1");
   await new Promise((resolve) => setTimeout(resolve, 0));
   return { store, view };
@@ -267,5 +267,24 @@ describe("the Highlights tab (FR-03.3, FR-03.4)", () => {
     late([highlight("h1", 2)]);
     await first;
     expect(store.highlights.map((each) => each.id)).toEqual(["other"]);
+  });
+});
+
+describe("after Settings (FR-08.2)", () => {
+  it("drops a deleted tag, also from a change that could not be saved", async () => {
+    mocked.updateHighlight.mockRejectedValueOnce(new Error("disk full"));
+    const { store } = await show();
+    await store.edit("h1", { extractionTagId: "t-fcr" });
+
+    mocked.listExtractionTags.mockResolvedValue([]);
+    await store.refreshTags();
+    expect(store.tags).toEqual([]);
+    expect(store.highlights[0]?.extractionTagId).toBeNull();
+    await store.edit("h1", {});
+    expect(mocked.updateHighlight).toHaveBeenLastCalledWith(
+      7,
+      "h1",
+      expect.objectContaining({ extractionTagId: null }),
+    );
   });
 });

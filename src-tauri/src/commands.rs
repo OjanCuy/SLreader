@@ -7,6 +7,7 @@ use std::sync::{Mutex, MutexGuard};
 use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::criteria::{self, ListKind};
 use crate::decisions::{self, Decision, ExclusionReason, Screening, Summary};
 use crate::extraction::Extraction;
 use crate::highlights::{self, ExtractionTag, Highlight, HighlightCategory, HighlightEdit, NewHighlight};
@@ -468,6 +469,109 @@ pub fn pick_reference_file(app: AppHandle, window: WebviewWindow) -> Option<Refe
         file_name: path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
         text: references::read_file(&path),
     })
+}
+
+/// A list of criteria or tags, in its order (FR-08.1, FR-08.2, FR-08.4).
+#[tauri::command(async)]
+pub fn list_criteria(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    kind: ListKind,
+) -> Result<Vec<criteria::Item>, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_reading(&current, session)?;
+    criteria::list(conn, kind)
+}
+
+/// Adds a criterion or tag at the end of its list; returns its id.
+#[tauri::command(async)]
+pub fn add_criterion(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    kind: ListKind,
+    code: String,
+    label: String,
+) -> Result<String, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    criteria::add(conn, kind, &code, &label)
+}
+
+/// Renames a criterion or tag.
+#[tauri::command(async)]
+pub fn update_criterion(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    kind: ListKind,
+    id: String,
+    code: String,
+    label: String,
+) -> Result<(), LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    criteria::update(conn, kind, &id, &code, &label)
+}
+
+/// How many papers or highlights use an item, for the delete confirmation.
+#[tauri::command(async)]
+pub fn count_criterion_uses(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    kind: ListKind,
+    id: String,
+) -> Result<u32, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_reading(&current, session)?;
+    criteria::uses(conn, kind, &id)
+}
+
+/// Deletes an item the user has confirmed deleting (O-10).
+#[tauri::command(async)]
+pub fn delete_criterion(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    kind: ListKind,
+    id: String,
+) -> Result<(), LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    criteria::delete(conn, kind, &id)
+}
+
+/// Saves the order of a list.
+#[tauri::command(async)]
+pub fn reorder_criteria(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    kind: ListKind,
+    ids: Vec<String>,
+) -> Result<(), LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    criteria::reorder(conn, kind, &ids)
+}
+
+/// The research questions of the library, one per line (FR-08.4).
+#[tauri::command(async)]
+pub fn get_research_questions(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+) -> Result<String, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_reading(&current, session)?;
+    criteria::research_questions(conn)
+}
+
+/// Saves the research questions.
+#[tauri::command(async)]
+pub fn set_research_questions(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    text: String,
+) -> Result<(), LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    criteria::set_research_questions(conn, &text)
 }
 
 /// The page mode, an app setting shared by all libraries (FR-02.2).
