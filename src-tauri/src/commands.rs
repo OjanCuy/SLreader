@@ -445,6 +445,43 @@ pub fn import_references(
     references::import(conn, &text, replace)
 }
 
+/// The reference list with the paper each reference is linked to (FR-05.3).
+#[tauri::command(async)]
+pub fn list_references(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+) -> Result<Vec<references::ReferenceChoice>, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_reading(&current, session)?;
+    references::list(conn)
+}
+
+/// Links a paper to a reference (FR-05.3, FR-05.4). `replace` is the user's
+/// confirmation to change metadata that is already filled in.
+#[tauri::command(async)]
+pub fn link_reference(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paper_id: String,
+    reference_id: String,
+    replace: bool,
+) -> Result<references::LinkResult, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    references::link(conn, &paper_id, &reference_id, replace)
+}
+
+#[tauri::command(async)]
+pub fn unlink_reference(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    paper_id: String,
+) -> Result<(), LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    references::unlink(conn, &paper_id)
+}
+
 /// A file chosen with "Choose CSV file".
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]

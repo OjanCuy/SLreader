@@ -7,6 +7,10 @@
 //! import without a single usable row. Papers keep their metadata; the database only
 //! removes their link to an old reference (`ON DELETE SET NULL`).
 //!
+//! A paper is linked to one reference, and a reference to at most one paper (FR-05.4).
+//! Linking fills the paper's metadata (FR-05.3) and replaces filled fields only when
+//! the user has confirmed it. Nothing here touches the decision.
+//!
 //! Every function that touches the database receives the connection of the open
 //! library from `libraries::library_for_*` (FR-14.4).
 
@@ -14,11 +18,11 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
-use crate::libraries::LibraryError;
-use crate::metadata::{MAX_REF_NO, MAX_YEAR};
+use crate::libraries::{ErrorCode, LibraryError};
+use crate::metadata::{self, MAX_REF_NO, MAX_YEAR, Metadata};
 
 /// A reference list of several thousand rows is far below this.
 const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
@@ -55,6 +59,31 @@ pub enum ImportResult {
         /// Reference numbers that appear on more than one imported row, ascending.
         duplicates: Vec<i64>,
     },
+}
+
+/// A reference of the list, for the choice on the Decision tab (FR-05.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferenceChoice {
+    pub id: String,
+    pub no: i64,
+    pub title: String,
+    pub year: Option<i64>,
+    /// The paper linked to it, if any.
+    pub linked_paper_id: Option<String>,
+    /// That paper's file name, or its title when it has no file.
+    pub linked_paper_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum LinkResult {
+    /// Another paper uses the reference; nothing changed.
+    Taken { paper: String },
+    /// Linking would replace filled fields and the user has not confirmed it.
+    NeedsConfirmation,
+    /// The paper's metadata now, and the other papers with its reference number.
+    Linked { metadata: Metadata, same_ref_no: Vec<String> },
 }
 
 /// Which column holds which field.
@@ -249,6 +278,120 @@ pub fn import(conn: &Connection, text: &str, replace: bool) -> Result<ImportResu
     })
 }
 
+/// The reference list in the order it was imported.
+pub fn list(conn: &Connection) -> Result<Vec<ReferenceChoice>, LibraryError> {
+    let mut stmt = conn.prepare(
+        "SELECT r.id, r.no, r.title, r.year, p.id, p.file_path, p.title
+         FROM reference AS r LEFT JOIN paper AS p ON p.reference_id = r.id
+         ORDER BY r.rowid",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        let linked_paper_id: Option<String> = r.get(4)?;
+        let file_path: Option<String> = r.get(5)?;
+        let title: Option<String> = r.get(6)?;
+        Ok(ReferenceChoice {
+            id: r.get(0)?,
+            no: r.get(1)?,
+            title: r.get(2)?,
+            year: r.get(3)?,
+            linked_paper_name: file_path
+                .map(|path| path.rsplit('/').next().unwrap_or(&path).to_string())
+                .or(title),
+            linked_paper_id,
+        })
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+fn unknown(detail: &str) -> LibraryError {
+    LibraryError::new(ErrorCode::Other, detail.to_string())
+}
+
+/// The metadata of a paper after linking `reference`: its values, and the paper's own
+/// where the reference has none, so linking never empties a field.
+fn filled_from(reference: &Reference, current: &Metadata) -> Metadata {
+    let text = |new: &Option<String>, old: &str| new.clone().unwrap_or_else(|| old.to_string());
+    Metadata {
+        ref_no: Some(reference.no),
+        title: reference.title.clone(),
+        year: reference.year.or(current.year),
+        source_database: text(&reference.source_database, &current.source_database),
+        doi: text(&reference.doi, &current.doi),
+    }
+}
+
+/// Whether a field the paper already has would get another value.
+fn replaces(current: &Metadata, new: &Metadata) -> bool {
+    let text = |old: &str, new: &str| !old.trim().is_empty() && old.trim() != new.trim();
+    current.ref_no.is_some_and(|no| new.ref_no != Some(no))
+        || current.year.is_some_and(|year| new.year != Some(year))
+        || text(&current.title, &new.title)
+        || text(&current.source_database, &new.source_database)
+        || text(&current.doi, &new.doi)
+}
+
+/// Links a paper to a reference and fills its metadata from it (FR-05.3, FR-05.4).
+/// `replace` is the user's confirmation to change fields that are already filled.
+pub fn link(
+    conn: &Connection,
+    paper_id: &str,
+    reference_id: &str,
+    replace: bool,
+) -> Result<LinkResult, LibraryError> {
+    let reference = conn
+        .query_row(
+            "SELECT no, title, year, source_database, doi FROM reference WHERE id = ?1",
+            [reference_id],
+            |r| {
+                Ok(Reference {
+                    no: r.get(0)?,
+                    title: r.get(1)?,
+                    year: r.get(2)?,
+                    source_database: r.get(3)?,
+                    doi: r.get(4)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| unknown("no such reference"))?;
+    if let Some(other) = list(conn)?
+        .into_iter()
+        .find(|choice| choice.id == reference_id && choice.linked_paper_id.as_deref().is_some_and(|id| id != paper_id))
+    {
+        return Ok(LinkResult::Taken { paper: other.linked_paper_name.unwrap_or_default() });
+    }
+    let current = metadata::get_metadata(conn, paper_id)?.metadata;
+    let new = filled_from(&reference, &current);
+    if !replace && replaces(&current, &new) {
+        return Ok(LinkResult::NeedsConfirmation);
+    }
+    let optional = |text: &str| Some(text.trim()).filter(|text| !text.is_empty()).map(String::from);
+    // One statement, so the link and the metadata change together.
+    conn.execute(
+        "UPDATE paper SET reference_id = ?1, ref_no = ?2, title = ?3, year = ?4, source_database = ?5, doi = ?6
+         WHERE id = ?7",
+        params![
+            reference_id,
+            new.ref_no,
+            new.title,
+            new.year,
+            optional(&new.source_database),
+            optional(&new.doi),
+            paper_id
+        ],
+    )?;
+    let described = metadata::get_metadata(conn, paper_id)?;
+    Ok(LinkResult::Linked { metadata: described.metadata, same_ref_no: described.same_ref_no })
+}
+
+/// Removes a paper's link; its metadata stays.
+pub fn unlink(conn: &Connection, paper_id: &str) -> Result<(), LibraryError> {
+    if conn.execute("UPDATE paper SET reference_id = NULL WHERE id = ?1", [paper_id])? == 0 {
+        return Err(unknown("no such paper"));
+    }
+    Ok(())
+}
+
 /// The characters Windows-1252 puts at 0x80 to 0x9F; elsewhere it matches Latin-1.
 const WINDOWS_1252: [char; 32] = [
     '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
@@ -433,6 +576,120 @@ mod tests {
         .unwrap();
         assert!(import(&conn, "1;New\n2;Fails", true).is_err());
         assert_eq!(titles(&conn), ["Old"]);
+    }
+
+    fn paper(conn: &Connection, file: &str) -> String {
+        conn.query_row("INSERT INTO paper (file_path) VALUES (?1) RETURNING id", [file], |r| r.get(0)).unwrap()
+    }
+
+    fn linked_to(conn: &Connection, paper: &str) -> Option<String> {
+        conn.query_row("SELECT reference_id FROM paper WHERE id = ?1", [paper], |r| r.get(0)).unwrap()
+    }
+
+    fn metadata_of(conn: &Connection, paper: &str) -> Metadata {
+        metadata::get_metadata(conn, paper).unwrap().metadata
+    }
+
+    #[test]
+    fn linking_fills_an_empty_paper_without_asking() {
+        // FR-05.3.
+        let (_dir, conn) = library();
+        import(&conn, "46;Tilapia ponds;2021;Scopus;10.1000/x", false).unwrap();
+        let kim = paper(&conn, "pdfs/kim.pdf");
+        let id = list(&conn).unwrap()[0].id.clone();
+
+        let result = link(&conn, &kim, &id, false).unwrap();
+        let expected = Metadata {
+            ref_no: Some(46),
+            title: "Tilapia ponds".into(),
+            year: Some(2021),
+            source_database: "Scopus".into(),
+            doi: "10.1000/x".into(),
+        };
+        assert_eq!(result, LinkResult::Linked { metadata: expected.clone(), same_ref_no: vec![] });
+        assert_eq!(metadata_of(&conn, &kim), expected);
+        let choice = &list(&conn).unwrap()[0];
+        assert_eq!(choice.linked_paper_id.as_deref(), Some(kim.as_str()));
+        assert_eq!(choice.linked_paper_name.as_deref(), Some("kim.pdf"));
+        // Choosing it again changes nothing and asks nothing.
+        assert!(matches!(link(&conn, &kim, &id, false).unwrap(), LinkResult::Linked { .. }));
+    }
+
+    #[test]
+    fn replaces_filled_fields_only_after_confirmation_and_never_empties_one() {
+        let (_dir, conn) = library();
+        import(&conn, "46;Tilapia ponds", false).unwrap();
+        let kim = paper(&conn, "pdfs/kim.pdf");
+        conn.execute(
+            "UPDATE paper SET title = 'My title', year = 2020, doi = 'mine', decision = 'exclude', assessment_note = 'n'",
+            [],
+        )
+        .unwrap();
+        let id = list(&conn).unwrap()[0].id.clone();
+        let before = metadata_of(&conn, &kim);
+
+        assert_eq!(link(&conn, &kim, &id, false).unwrap(), LinkResult::NeedsConfirmation);
+        assert_eq!(metadata_of(&conn, &kim), before);
+        assert_eq!(linked_to(&conn, &kim), None);
+
+        link(&conn, &kim, &id, true).unwrap();
+        assert_eq!(
+            metadata_of(&conn, &kim),
+            Metadata { ref_no: Some(46), title: "Tilapia ponds".into(), ..before }
+        );
+        let kept: (String, String) = conn
+            .query_row("SELECT decision, assessment_note FROM paper", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(kept, ("exclude".into(), "n".into()));
+    }
+
+    #[test]
+    fn one_reference_links_to_one_paper() {
+        // FR-05.4.
+        let (_dir, conn) = library();
+        import(&conn, "46;A\n47;B", false).unwrap();
+        let (first, second) = (paper(&conn, "pdfs/kim-2021.pdf"), paper(&conn, "pdfs/b.pdf"));
+        let ids: Vec<String> = list(&conn).unwrap().into_iter().map(|choice| choice.id).collect();
+        link(&conn, &first, &ids[0], false).unwrap();
+
+        let refused = link(&conn, &second, &ids[0], true).unwrap();
+        assert_eq!(refused, LinkResult::Taken { paper: "kim-2021.pdf".into() });
+        assert_eq!(linked_to(&conn, &second), None);
+        assert_eq!(metadata_of(&conn, &second), Metadata::default());
+
+        // Moving to another reference frees the first one.
+        link(&conn, &first, &ids[1], true).unwrap();
+        assert!(matches!(link(&conn, &second, &ids[0], false).unwrap(), LinkResult::Linked { .. }));
+    }
+
+    #[test]
+    fn unlinking_keeps_the_metadata() {
+        let (_dir, conn) = library();
+        import(&conn, "46;A", false).unwrap();
+        let kim = paper(&conn, "pdfs/kim.pdf");
+        let id = list(&conn).unwrap()[0].id.clone();
+        link(&conn, &kim, &id, false).unwrap();
+        unlink(&conn, &kim).unwrap();
+        assert_eq!(linked_to(&conn, &kim), None);
+        assert_eq!(metadata_of(&conn, &kim).title, "A");
+        assert_eq!(list(&conn).unwrap()[0].linked_paper_id, None);
+        assert!(unlink(&conn, "nope").is_err());
+        assert!(link(&conn, &kim, "nope", false).is_err());
+    }
+
+    #[test]
+    fn only_a_new_reference_number_releases_the_link() {
+        let (_dir, conn) = library();
+        import(&conn, "46;A", false).unwrap();
+        let kim = paper(&conn, "pdfs/kim.pdf");
+        let id = list(&conn).unwrap()[0].id.clone();
+        link(&conn, &kim, &id, false).unwrap();
+
+        let edited = Metadata { title: "Other".into(), year: Some(1999), ..metadata_of(&conn, &kim) };
+        metadata::set_metadata(&conn, &kim, &edited).unwrap();
+        assert_eq!(linked_to(&conn, &kim), Some(id));
+        metadata::set_metadata(&conn, &kim, &Metadata { ref_no: Some(4), ..edited }).unwrap();
+        assert_eq!(linked_to(&conn, &kim), None);
     }
 
     #[test]

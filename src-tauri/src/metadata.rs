@@ -2,7 +2,8 @@
 //! (FR-05.1), and the warning for a reference number used twice (FR-05.4).
 //!
 //! A reference number typed by hand may repeat: the user is warned, nothing is
-//! refused. Saving metadata never touches the decision or the reference link.
+//! refused. Saving metadata never touches the decision. A new reference number
+//! releases the link to the reference list (`references.rs`); other fields keep it.
 //!
 //! Every function receives the connection of the open library from
 //! `libraries::library_for_*` (FR-14.4).
@@ -84,7 +85,10 @@ pub fn set_metadata(conn: &Connection, paper_id: &str, new: &Metadata) -> Result
     }
     let optional = |text: &str| Some(text.trim().to_string()).filter(|text| !text.is_empty());
     let changed = conn.execute(
-        "UPDATE paper SET ref_no = ?1, title = ?2, year = ?3, source_database = ?4, doi = ?5 WHERE id = ?6",
+        // `ref_no` on the right is still the old number.
+        "UPDATE paper SET reference_id = CASE WHEN ref_no IS ?1 THEN reference_id END,
+                          ref_no = ?1, title = ?2, year = ?3, source_database = ?4, doi = ?5
+         WHERE id = ?6",
         params![
             new.ref_no,
             // Kept as typed: trimming here would fight the user's typing.

@@ -9,14 +9,19 @@
 import {
   getMetadata,
   getScreening,
+  linkReference,
   listExclusionReasons,
+  listReferences,
   setAssessmentNote,
   setDecision,
   setExclusionReason,
   setMetadata,
+  unlinkReference,
   type Decision,
   type ExclusionReason,
   type Metadata,
+  type ReferenceChoice,
+  type ReferenceLink,
   type Screening,
 } from "../lib/api";
 import { showToast } from "../lib/components/toasts.svelte";
@@ -53,6 +58,8 @@ export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}
   let metadataSaved = $state(false);
   /** Other papers with the open paper's reference number (FR-05.4). */
   let sameRefNo = $state.raw<string[]>([]);
+  /** The reference list, for the choice of a reference (FR-05.3). */
+  let references = $state.raw<ReferenceChoice[]>([]);
   /** Papers with a change that could not be saved. */
   let failed = $state.raw<ReadonlySet<string>>(new Set<string>());
 
@@ -85,14 +92,16 @@ export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}
     try {
       // So that what is read includes the changes still being saved.
       await Promise.all(saving.values());
-      const [stored, choices, described] = await Promise.all([
+      const [stored, choices, described, listed] = await Promise.all([
         getScreening(ofSession, id),
         listExclusionReasons(ofSession),
         getMetadata(ofSession, id),
+        listReferences(ofSession),
       ]);
       if (mine !== generation) return;
       if (!stored || !described) throw new Error("nothing stored");
       reasons = choices ?? [];
+      references = listed ?? [];
       // Changes that could not be saved stay on screen.
       const { metadata: unsavedMetadata, ...unsavedScreening } = unsaved.get(id)?.changes ?? {};
       screening = { ...stored, ...unsavedScreening };
@@ -221,6 +230,8 @@ export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}
           }
         }
         onmetadatasaved?.();
+        // A new number releases the link to a reference.
+        await refreshReferences();
       }
       if (Object.keys(changes).length === 0 && unsaved.get(id) === entry) unsaved.delete(id);
       setFailed(id, false);
@@ -231,6 +242,75 @@ export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}
       // The library was left: its banner is gone, so say it here.
       if (disposed) showToast(SAVE_ERROR, "error");
     }
+  }
+
+  /** Reads the reference list again, e.g. after an import. Never rejects. */
+  async function refreshReferences(): Promise<void> {
+    if (session < 0) return;
+    try {
+      references = (await listReferences(session)) ?? [];
+    } catch (failure) {
+      console.error("The references could not be read", failure);
+    }
+  }
+
+  /** Runs `task` after the saves of this paper, so that neither overtakes the other. */
+  function afterSaves<T>(id: string, task: () => Promise<T>): Promise<T> {
+    const run = (saving.get(id) ?? Promise.resolve()).then(task);
+    saving.set(
+      id,
+      run.then(
+        () => {},
+        () => {},
+      ),
+    );
+    return run;
+  }
+
+  /**
+   * Links the open paper to a reference, which fills its metadata (FR-05.3).
+   * Resolves to null when nothing was done because something could not be saved.
+   */
+  async function link(referenceId: string, replace = false): Promise<ReferenceLink | null> {
+    const id = paperId;
+    if (id === null || !metadata) return null;
+    const ofSession = session;
+    // What was typed is saved first, so that the question is about the current values.
+    if (unsaved.has(id)) await save(id);
+    // Saving it later would overwrite what the reference filled in.
+    if (unsaved.get(id)?.changes.metadata) return null;
+    try {
+      const result = await afterSaves(id, () => linkReference(ofSession, id, referenceId, replace));
+      if (result.status === "linked") {
+        if (paperId === id) {
+          metadata = result.metadata;
+          sameRefNo = result.sameRefNo;
+          metadataSaved = true;
+        }
+        onmetadatasaved?.();
+      }
+      if (result.status !== "needs_confirmation") await refreshReferences();
+      return result;
+    } catch (failure) {
+      console.error("The reference could not be linked", failure);
+      showToast(SAVE_ERROR, "error");
+      return null;
+    }
+  }
+
+  /** Removes the open paper's link; its metadata stays. */
+  async function unlink(): Promise<void> {
+    const id = paperId;
+    if (id === null) return;
+    const ofSession = session;
+    try {
+      await afterSaves(id, () => unlinkReference(ofSession, id));
+    } catch (failure) {
+      console.error("The reference could not be unlinked", failure);
+      showToast(SAVE_ERROR, "error");
+      return;
+    }
+    await refreshReferences();
   }
 
   /** Saves the notes that are still waiting, e.g. when their field is left. */
@@ -291,12 +371,18 @@ export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}
     get sameRefNo() {
       return sameRefNo;
     },
+    get references() {
+      return references;
+    },
     /** A change, of this or an earlier paper, could not be saved. */
     get saveFailed() {
       return failed.size > 0;
     },
     open,
     refreshReasons,
+    refreshReferences,
+    link,
+    unlink,
     close: () => reset(null),
     decide,
     chooseReason,

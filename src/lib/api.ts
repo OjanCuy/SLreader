@@ -429,6 +429,44 @@ export function setResearchQuestions(session: number, text: string): Promise<voi
   return invoke("set_research_questions", { session, text });
 }
 
+/** A reference of the list, with the paper it is linked to. */
+export interface ReferenceChoice {
+  id: string;
+  no: number;
+  title: string;
+  year: number | null;
+  linkedPaperId: string | null;
+  /** That paper's file name, or its title when it has no file. */
+  linkedPaperName: string | null;
+}
+
+/** The reference list in the order it was imported (FR-05.3). */
+export function listReferences(session: number): Promise<ReferenceChoice[]> {
+  return invoke("list_references", { session });
+}
+
+export type ReferenceLink =
+  /** Another paper uses the reference; nothing changed. */
+  | { status: "taken"; paper: string }
+  /** Filled fields would change: ask the user, then link with `replace`. */
+  | { status: "needs_confirmation" }
+  | { status: "linked"; metadata: Metadata; sameRefNo: string[] };
+
+/** `replace` only after the user has confirmed replacing the paper's metadata. */
+export function linkReference(
+  session: number,
+  paperId: string,
+  referenceId: string,
+  replace = false,
+): Promise<ReferenceLink> {
+  return invoke("link_reference", { session, paperId, referenceId, replace });
+}
+
+/** The paper keeps its metadata. */
+export function unlinkReference(session: number, paperId: string): Promise<void> {
+  return invoke("unlink_reference", { session, paperId });
+}
+
 /** Shows the system file picker for one PDF. Null when the user cancels. */
 export function pickPdf(): Promise<string | null> {
   return invoke("pick_pdf");

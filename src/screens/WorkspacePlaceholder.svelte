@@ -335,7 +335,13 @@
 {/if}
 
 {#if importingReferences}
-  <ImportReferencesDialog {session} onclose={() => (importingReferences = false)} />
+  <ImportReferencesDialog
+    {session}
+    onclose={() => {
+      importingReferences = false;
+      decisions.refreshReferences();
+    }}
+  />
 {/if}
 
 {#if settingsSection !== null}
