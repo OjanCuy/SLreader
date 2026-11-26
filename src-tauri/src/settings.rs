@@ -25,6 +25,38 @@ impl PageMode {
     }
 }
 
+/// The column separator of exported CSV files (FR-06.4, FR-08.3). Choosing it comes
+/// with T-37.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CsvDelimiter {
+    #[default]
+    Semicolon,
+    Comma,
+}
+
+impl CsvDelimiter {
+    const KEY: &str = "csv_delimiter";
+
+    /// The character, which is also the stored value.
+    pub fn character(self) -> char {
+        match self {
+            CsvDelimiter::Semicolon => ';',
+            CsvDelimiter::Comma => ',',
+        }
+    }
+}
+
+/// The chosen separator; a semicolon when none or an unknown one is stored.
+pub fn csv_delimiter(app: &Connection) -> rusqlite::Result<CsvDelimiter> {
+    let value: Option<String> = app
+        .query_row("SELECT value FROM app_setting WHERE key = ?1", [CsvDelimiter::KEY], |r| r.get(0))
+        .optional()?;
+    Ok(match value.as_deref() {
+        Some(",") => CsvDelimiter::Comma,
+        _ => CsvDelimiter::Semicolon,
+    })
+}
+
 /// The remembered page mode; "normal" when none or an unknown one is stored.
 pub fn page_mode(app: &Connection) -> rusqlite::Result<PageMode> {
     let value: Option<String> = app
@@ -70,6 +102,19 @@ mod tests {
         let app = open_app_db(dir.path()).unwrap();
         app.execute("INSERT INTO app_setting (key, value) VALUES ('view_mode', 'neon')", []).unwrap();
         assert_eq!(page_mode(&app).unwrap(), PageMode::Normal);
+    }
+
+    #[test]
+    fn the_csv_separator_is_a_semicolon_unless_a_comma_is_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = open_app_db(dir.path()).unwrap();
+        assert_eq!(csv_delimiter(&app).unwrap(), CsvDelimiter::Semicolon);
+        for (stored, expected) in
+            [(",", CsvDelimiter::Comma), (";", CsvDelimiter::Semicolon), ("|", CsvDelimiter::Semicolon)]
+        {
+            app.execute("REPLACE INTO app_setting (key, value) VALUES ('csv_delimiter', ?1)", [stored]).unwrap();
+            assert_eq!(csv_delimiter(&app).unwrap(), expected);
+        }
     }
 
     #[test]

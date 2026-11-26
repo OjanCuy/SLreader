@@ -9,6 +9,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::criteria::{self, ListKind};
 use crate::decisions::{self, Decision, ExclusionReason, Screening, Summary};
+use crate::export;
 use crate::extraction::Extraction;
 use crate::highlights::{self, ExtractionTag, Highlight, HighlightCategory, HighlightEdit, NewHighlight};
 use crate::libraries::{self, LibraryError, LibrarySummary};
@@ -519,6 +520,38 @@ pub fn update_note_links(
     let current = lock(&current.0);
     let conn = libraries::library_for_writing(&current, session)?;
     ref_links::update(conn, from, to)
+}
+
+/// "Decisions (CSV)" (FR-06.1): asks where to save, then writes the file. Resolves to
+/// the file name, or `None` when the user cancels. Also for a read-only library.
+#[tauri::command(async)]
+pub fn export_decisions(
+    app_handle: AppHandle,
+    window: WebviewWindow,
+    app: State<'_, AppDb>,
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+) -> Result<Option<String>, LibraryError> {
+    // No lock is held while the user chooses.
+    let Some(path) = app_handle
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .set_file_name("decisions.csv")
+        .add_filter("CSV", &["csv"])
+        .blocking_save_file()
+        .and_then(|file| file.into_path().ok())
+    else {
+        return Ok(None);
+    };
+    let delimiter = settings::csv_delimiter(&lock(&app.0))?;
+    let csv = {
+        let current = lock(&current.0);
+        let conn = libraries::library_for_reading(&current, session)?;
+        export::decisions_csv(conn, delimiter)?
+    };
+    export::write_file(&path, &csv)?;
+    Ok(Some(path.file_name().unwrap_or_default().to_string_lossy().into_owned()))
 }
 
 /// A file chosen with "Choose CSV file".

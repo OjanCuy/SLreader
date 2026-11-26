@@ -484,6 +484,16 @@ export function updateNoteLinks(session: number, from: number, to: number): Prom
   return invoke("update_note_links", { session, from, to });
 }
 
+// ---- Exports (FR-06.1). ----
+
+/**
+ * Asks where to save and writes the decisions as CSV. Resolves to the file name, or
+ * null when the user cancels.
+ */
+export function exportDecisions(session: number): Promise<string | null> {
+  return invoke("export_decisions", { session });
+}
+
 /** Shows the system file picker for one PDF. Null when the user cancels. */
 export function pickPdf(): Promise<string | null> {
   return invoke("pick_pdf");

@@ -2,6 +2,7 @@ mod commands;
 pub mod criteria;
 pub mod db;
 pub mod decisions;
+pub mod export;
 pub mod extraction;
 pub mod highlights;
 pub mod libraries;
@@ -108,6 +109,7 @@ pub fn run() {
             commands::paper_for_ref_no,
             commands::count_note_links,
             commands::update_note_links,
+            commands::export_decisions,
             commands::list_criteria,
             commands::add_criterion,
             commands::update_criterion,

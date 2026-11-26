@@ -12,6 +12,7 @@
   import {
     countNoteLinks,
     deletePaper,
+    exportDecisions,
     getSummary,
     importPdfs,
     listPapers,
@@ -28,6 +29,7 @@
   import Icon from "../lib/components/Icon.svelte";
   import IconButton from "../lib/components/IconButton.svelte";
   import InlineBanner from "../lib/components/InlineBanner.svelte";
+  import Menu from "../lib/components/Menu.svelte";
   import ProgressBar from "../lib/components/ProgressBar.svelte";
   import TabBar, { tabId, tabPanelId } from "../lib/components/TabBar.svelte";
   import { dismissToast, showToast } from "../lib/components/toasts.svelte";
@@ -41,6 +43,7 @@
     SAVE_ERROR,
   } from "../lib/libraryTexts";
   import { noPaperMessage, updatedMessage } from "../lib/refLinks";
+  import { DECISIONS_ITEM, exportedMessage, NOTHING_TO_EXPORT } from "../lib/exportTexts";
   import { createHighlightStore } from "../reader/highlightStore.svelte";
   import HighlightsPanel from "../reader/HighlightsPanel.svelte";
   import Reader from "../reader/Reader.svelte";
@@ -176,6 +179,28 @@
     }
   }
 
+  let exporting = false;
+
+  async function exportCsv() {
+    if (exporting) return;
+    exporting = true;
+    try {
+      // The file holds what is on screen, so everything typed is saved first.
+      await Promise.all([decisions.settle(), settings.flush()]);
+      if (decisions.saveFailed || settings.failed) {
+        showToast(SAVE_ERROR, "error");
+        return;
+      }
+      const name = await exportDecisions(session);
+      if (name) showToast(exportedMessage(name), "success");
+    } catch (failure) {
+      console.error("The decisions could not be exported", failure);
+      showToast(SAVE_ERROR, "error");
+    } finally {
+      exporting = false;
+    }
+  }
+
   function openSettings(section: SettingsSection = "questions") {
     settingsOpener = document.activeElement as HTMLElement | null;
     // A text selection would keep the highlight popover and its keys open.
@@ -303,6 +328,19 @@
       <Button disabled={problem?.readOnly} onclick={() => (importingReferences = true)}>
         Import references
       </Button>
+      <Menu
+        label="Export"
+        align="end"
+        disabled={papers === null}
+        items={[
+          {
+            label: DECISIONS_ITEM,
+            disabled: !papers?.length,
+            hint: papers?.length ? undefined : NOTHING_TO_EXPORT,
+            onselect: exportCsv,
+          },
+        ]}
+      />
       <IconButton icon="settings" label="Settings" onclick={() => openSettings()} />
     </div>
   </header>
