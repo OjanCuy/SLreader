@@ -13,7 +13,7 @@
     type BackupFile,
     type LibrarySummary,
   } from "../lib/api";
-  import { backupErrorMessage } from "../lib/backupTexts";
+  import { backupErrorMessage, overLimitMessage } from "../lib/backupTexts";
   import Button from "../lib/components/Button.svelte";
   import Dialog from "../lib/components/Dialog.svelte";
   import InlineBanner from "../lib/components/InlineBanner.svelte";
@@ -62,7 +62,11 @@
       );
     } catch (failure) {
       // The dialog stays open with what was typed, so the user can try again.
-      error = backupErrorMessage(failure, libraryErrorMessage(failure, "create"));
+      // Only an old web app backup can hold more papers than a library (FR-01.4).
+      error =
+        backup && (failure as { code?: string } | null)?.code === "over_limit"
+          ? overLimitMessage(backup.paperCount)
+          : backupErrorMessage(failure, libraryErrorMessage(failure, "create"));
     } finally {
       busy = false;
     }

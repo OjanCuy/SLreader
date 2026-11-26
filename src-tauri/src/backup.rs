@@ -18,9 +18,13 @@
 //!
 //! Everything is one transaction: a restore that fails changes nothing.
 //!
+//! A backup of the prototype web app is read too (FR-07.3, `prototype.rs`) and
+//! restored the same way.
+//!
 //! Restoring writes `paper.decision`, but only with decisions the user saved in the
 //! backup, and only after the user chose to restore (rule 1 of CLAUDE.md).
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
@@ -35,6 +39,7 @@ use crate::export::markdown::safe_stem;
 use crate::highlights::{self, NewHighlight, PaletteColor, Rect};
 use crate::libraries::{ErrorCode, LibraryError, PDF_FOLDER};
 use crate::papers::pdf_location;
+use crate::prototype::{self, OldApp};
 
 /// Marks a file as an SLReader backup.
 const FORMAT: &str = "slreader-backup";
@@ -57,6 +62,9 @@ pub struct Backup {
     pub highlight_categories: Vec<Category>,
     pub references: Vec<Reference>,
     pub papers: Vec<Paper>,
+    /// Set for a backup of the prototype web app; never written to a file.
+    #[serde(skip)]
+    pub old_app: Option<OldApp>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -283,6 +291,7 @@ fn collect(conn: &Connection) -> Result<Backup, LibraryError> {
             .collect(),
         references,
         papers,
+        old_app: None,
     })
 }
 
@@ -303,6 +312,11 @@ pub fn read_file(path: &Path) -> Result<Backup, LibraryError> {
 pub fn parse(bytes: &[u8]) -> Result<Backup, LibraryError> {
     let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
     let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| not_a_backup(e.to_string()))?;
+    if value.get("app").and_then(|app| app.as_str()) == Some(prototype::APP) {
+        let backup = prototype::parse(value)?;
+        check(&backup)?;
+        return Ok(backup);
+    }
     if value.get("format").and_then(|f| f.as_str()) != Some(FORMAT) {
         return Err(not_a_backup("not marked as an SLReader backup"));
     }
@@ -364,7 +378,8 @@ fn check(backup: &Backup) -> Result<(), LibraryError> {
     }
 
     let references = unique_ids("reference", backup.references.iter().map(|r| r.id.as_str()))?;
-    if backup.papers.len() > MAX_PAPERS as usize {
+    // The prototype has no limit: its backup is counted and refused when restoring.
+    if backup.old_app.is_none() && backup.papers.len() > MAX_PAPERS as usize {
         return bad("more papers than a library can hold");
     }
     unique_ids("paper", backup.papers.iter().map(|p| p.id.as_str()))?;
@@ -417,8 +432,20 @@ fn ids_in(conn: &Connection, table: &str) -> Result<HashSet<String>, LibraryErro
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
+/// A backup of the prototype is first adjusted to the library (`prototype::fit`).
+fn fitted<'a>(conn: &Connection, backup: &'a Backup) -> Result<Cow<'a, Backup>, LibraryError> {
+    Ok(match &backup.old_app {
+        Some(old) => Cow::Owned(prototype::fit(conn, backup, old)?),
+        None => Cow::Borrowed(backup),
+    })
+}
+
 /// What restoring `backup` into the library would replace. Only reads.
 pub fn preview(conn: &Connection, backup: &Backup) -> Result<RestorePreview, LibraryError> {
+    count_replaced(conn, fitted(conn, backup)?.as_ref())
+}
+
+fn count_replaced(conn: &Connection, backup: &Backup) -> Result<RestorePreview, LibraryError> {
     let papers = ids_in(conn, "paper")?;
     let highlights = ids_in(conn, "highlight")?;
     let replaced_papers = backup.papers.iter().filter(|p| papers.contains(&p.id)).count();
@@ -437,7 +464,9 @@ pub fn preview(conn: &Connection, backup: &Backup) -> Result<RestorePreview, Lib
 pub fn restore(conn: &Connection, folder: &Path, backup: &Backup, fresh: bool) -> Result<RestoreReport, LibraryError> {
     let transaction = conn.unchecked_transaction()?;
     let conn: &Connection = &transaction;
-    let papers_after = preview(conn, backup)?.papers_after;
+    let backup = fitted(conn, backup)?;
+    let backup = backup.as_ref();
+    let papers_after = count_replaced(conn, backup)?.papers_after;
     if papers_after > MAX_PAPERS as usize {
         return Err(LibraryError::new(ErrorCode::OverLimit, format!("{papers_after} papers")));
     }

@@ -9,6 +9,7 @@ pub mod highlights;
 pub mod libraries;
 pub mod metadata;
 pub mod papers;
+pub mod prototype;
 pub mod ref_links;
 pub mod references;
 pub mod settings;

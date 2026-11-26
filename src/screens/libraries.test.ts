@@ -179,6 +179,25 @@ describe("Libraries screen", () => {
     expect(toasts.map((t) => t.message)).toEqual(["Backup restored."]);
   });
 
+  it("says when an old web app backup holds more than 250 papers (FR-07.3)", async () => {
+    // The prototype has no library name and no paper limit.
+    mocked.pickBackup.mockResolvedValue({ path: "C:\\b\\old.json", libraryName: "", paperCount: 263 });
+    mocked.pickFolder.mockResolvedValue("C:\\restored");
+    mocked.createLibraryFromBackup.mockRejectedValue({ code: "over_limit", detail: "x" });
+    await show([]);
+
+    await fireEvent.click(button("Restore from backup"));
+    await fireEvent.input(await screen.findByLabelText("Name"), { target: { value: "Old" } });
+    await fireEvent.click(button("Choose folder"));
+    const submit = within(screen.getByRole("dialog")).getByRole("button", { name: "Create library" });
+    await vi.waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(submit);
+
+    expect(
+      await screen.findByText("Library limit is 250 papers. This backup would make 263."),
+    ).toBeTruthy();
+  });
+
   it("refuses a file that is not a backup", async () => {
     mocked.pickBackup.mockRejectedValue({ code: "not_a_backup", detail: "x" });
     await show([library()]);
