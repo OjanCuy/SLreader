@@ -690,6 +690,25 @@ mod tests {
     }
 
     #[test]
+    fn asking_what_would_be_replaced_changes_nothing() {
+        // Rule 1: the decision changes only after the user chose "Restore".
+        let (_dir, conn) = library();
+        conn.execute_batch(
+            "INSERT INTO paper (id, file_path, decision) VALUES ('uploaded', 'pdfs/kim-2021.pdf', 'exclude');
+             UPDATE highlight_category SET color = 'gray' WHERE color = 'yellow';
+             INSERT INTO exclusion_reason (code, label, sort_order) VALUES ('E3', 'Mine', 0);",
+        )
+        .unwrap();
+        let mut file = old_file();
+        file["settings"]["reasons"] = json!(["Not fish"]);
+        let before = conn.total_changes();
+        let preview = backup::preview(&conn, &read(&file)).unwrap();
+        assert_eq!(preview, RestorePreview { replaced_papers: 1, replaced_highlights: 0, papers_after: 2 });
+        assert_eq!(conn.total_changes(), before);
+        assert_eq!(rows(&conn, "SELECT decision FROM paper"), ["exclude"]);
+    }
+
+    #[test]
     fn keeps_a_reference_link_when_the_number_stays() {
         let (dir, conn) = library();
         conn.execute_batch(
