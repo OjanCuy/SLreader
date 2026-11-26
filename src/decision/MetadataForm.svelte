@@ -19,9 +19,11 @@
     onchange: (patch: Partial<Metadata>) => void;
     /** A field was left: save at once. */
     ondone: () => void;
+    /** The reference number field was left. */
+    onrefnodone: () => void;
   }
 
-  let { metadata, sameRefNo, saved, readOnly, onchange, ondone }: Props = $props();
+  let { metadata, sameRefNo, saved, readOnly, onchange, ondone, onrefnodone }: Props = $props();
 
   const shown = (number: number | null) => (number === null ? "" : String(number));
 
@@ -41,7 +43,7 @@
       value={shown(metadata.refNo)}
       readonly={readOnly}
       oninput={(event) => onchange({ refNo: typedNumber(event.currentTarget, 9) })}
-      onblur={ondone}
+      onblur={onrefnodone}
     />
     <TextField
       label="Year"

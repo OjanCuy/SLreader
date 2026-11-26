@@ -26,6 +26,7 @@ import {
 } from "../lib/api";
 import { showToast } from "../lib/components/toasts.svelte";
 import { SAVE_ERROR } from "../lib/libraryTexts";
+import { renumberLinks } from "../lib/refLinks";
 
 /** Typed text is saved this long after the last key press, and when its field is left. */
 export const NOTE_SAVE_DELAY_MS = 600;
@@ -44,9 +45,11 @@ interface Listeners {
   onsaved?: () => void;
   /** Metadata was saved: the paper list may show another title. */
   onmetadatasaved?: () => void;
+  /** The user finished changing a paper's reference number, and it is saved. */
+  onrenumbered?: (from: number, to: number) => void;
 }
 
-export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}) {
+export function createDecisionStore({ onsaved, onmetadatasaved, onrenumbered }: Listeners = {}) {
   let paperId = $state<string | null>(null);
   let status = $state<"loading" | "ready" | "error">("loading");
   let screening = $state.raw<Screening | null>(null);
@@ -71,8 +74,11 @@ export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}
   /** The running save of each paper: saves of one paper never overtake. */
   const saving = new Map<string, Promise<void>>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Papers whose number is being changed: the number before, and the one typed now. */
+  const renumbering = new Map<string, { from: number | null; to: number | null }>();
 
   function reset(next: string | null) {
+    if (paperId !== null) finishRenumber(paperId);
     flush();
     generation++;
     paperId = next;
@@ -176,10 +182,15 @@ export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}
   function editMetadata(patch: Partial<Metadata>): void {
     if (!metadata) return;
     const refNoChanged = "refNo" in patch && patch.refNo !== metadata.refNo;
+    const before = metadata.refNo;
     const id = change({ metadata: { ...metadata, ...patch } });
     if (id === null) return;
     metadataSaved = false;
-    if (refNoChanged) sameRefNo = [];
+    if (refNoChanged) {
+      sameRefNo = [];
+      const from = renumbering.get(id)?.from;
+      renumbering.set(id, { from: from === undefined ? before : from, to: patch.refNo ?? null });
+    }
     saveSoon(id);
   }
 
@@ -275,6 +286,7 @@ export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}
     const id = paperId;
     if (id === null || !metadata) return null;
     const ofSession = session;
+    const before = metadata.refNo;
     // What was typed is saved first, so that the question is about the current values.
     if (unsaved.has(id)) await save(id);
     // Saving it later would overwrite what the reference filled in.
@@ -288,6 +300,7 @@ export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}
           metadataSaved = true;
         }
         onmetadatasaved?.();
+        tellRenumbered(before, result.metadata.refNo);
       }
       if (result.status !== "needs_confirmation") await refreshReferences();
       return result;
@@ -313,14 +326,57 @@ export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}
     await refreshReferences();
   }
 
+  /**
+   * The reference number of a paper is no longer being typed: once it is saved, tells
+   * about the change, so that note links can be offered an update.
+   */
+  async function finishRenumber(id: string): Promise<void> {
+    const change = renumbering.get(id);
+    if (!change) return;
+    renumbering.delete(id);
+    await save(id);
+    if (unsaved.get(id)?.changes.metadata) {
+      // Not saved: asked again after "Try again", unless it was typed anew.
+      if (!renumbering.has(id)) renumbering.set(id, change);
+      return;
+    }
+    tellRenumbered(change.from, change.to);
+  }
+
+  function tellRenumbered(from: number | null, to: number | null) {
+    if (!disposed && from !== null && to !== null && from !== to) onrenumbered?.(from, to);
+  }
+
+  /** Saves what is waiting and resolves when every save is over. */
+  async function settle(): Promise<void> {
+    flush();
+    await Promise.all(saving.values());
+  }
+
+  /**
+   * The note links were updated in the database: the same change to what is on screen
+   * and to what is still unsaved.
+   */
+  function renumberNotes(from: number, to: number): void {
+    for (const { changes } of unsaved.values()) {
+      if (changes.assessmentNote !== undefined) {
+        changes.assessmentNote = renumberLinks(changes.assessmentNote, from, to);
+      }
+    }
+    if (screening) {
+      screening = { ...screening, assessmentNote: renumberLinks(screening.assessmentNote, from, to) };
+    }
+  }
+
   /** Saves the notes that are still waiting, e.g. when their field is left. */
   function flush(): void {
     for (const id of [...timers.keys()]) save(id);
   }
 
   /** "Try again": saves everything that could not be saved. */
-  function retry(): Promise<unknown> {
-    return Promise.all([...failed].map(save));
+  async function retry(): Promise<void> {
+    await Promise.all([...failed].map(save));
+    await Promise.all([...renumbering.keys()].map(finishRenumber));
   }
 
   /** The paper was deleted: drop what was waiting for it. */
@@ -328,6 +384,7 @@ export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}
     clearTimeout(timers.get(id));
     timers.delete(id);
     unsaved.delete(id);
+    renumbering.delete(id);
     setFailed(id, false);
   }
 
@@ -389,6 +446,9 @@ export function createDecisionStore({ onsaved, onmetadatasaved }: Listeners = {}
     editNote,
     editMetadata,
     flush,
+    settle,
+    refNoDone: () => (paperId === null ? Promise.resolve() : finishRenumber(paperId)),
+    renumberNotes,
     retry,
     forget,
     dispose,

@@ -1,13 +1,14 @@
 <!--
   S-02 Tab Decision (FR-04.1 to FR-04.4, FR-05.1; Brief Sections 6 and 7): file name,
   reference choice, metadata, decision, exclusion reason (only while excluded),
-  assessment note, and "Delete paper" at the bottom. Text approved in T-22, T-24, and
-  T-26. [#n] links (T-27) and AI suggestions (T-46) are added later.
+  assessment note with its [#n] links, and "Delete paper" at the bottom. Text approved
+  in T-22, T-24, T-26, and T-27. AI suggestions (T-46) are added later.
 -->
 <script lang="ts">
   import Button from "../lib/components/Button.svelte";
   import Icon from "../lib/components/Icon.svelte";
   import InlineBanner from "../lib/components/InlineBanner.svelte";
+  import RefLinks from "../lib/components/RefLinks.svelte";
   import Select from "../lib/components/Select.svelte";
   import TextArea from "../lib/components/TextArea.svelte";
   import { GENERIC_ERROR, SAVE_ERROR } from "../lib/libraryTexts";
@@ -25,9 +26,11 @@
     ondelete: () => void;
     /** Opens Settings at the exclusion criteria. */
     onsettings: () => void;
+    /** A [#n] link was clicked. */
+    onopenref: (refNo: number) => void;
   }
 
-  let { store, name, readOnly, ondelete, onsettings }: Props = $props();
+  let { store, name, readOnly, ondelete, onsettings, onopenref }: Props = $props();
 
   const reasonOptions = $derived([
     { value: "", label: "No reason" },
@@ -66,6 +69,7 @@
         {readOnly}
         onchange={(patch) => store.editMetadata(patch)}
         ondone={() => store.flush()}
+        onrefnodone={() => store.refNoDone()}
       />
 
       <DecisionControl
@@ -98,6 +102,7 @@
         onblur={() => store.flush()}
       />
       <span class="saved" role="status">{store.noteSaved ? "Saved" : ""}</span>
+      <RefLinks note={store.screening.assessmentNote} onopen={onopenref} />
     {/key}
   {/if}
 

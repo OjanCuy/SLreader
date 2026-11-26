@@ -14,6 +14,7 @@ use crate::highlights::{self, ExtractionTag, Highlight, HighlightCategory, Highl
 use crate::libraries::{self, LibraryError, LibrarySummary};
 use crate::metadata::{self, Metadata, PaperMetadata};
 use crate::papers::{self, ImportOutcome, ImportReport, PaperListItem};
+use crate::ref_links;
 use crate::references;
 use crate::settings::{self, PageMode};
 use crate::{AppDb, CurrentLibrary};
@@ -480,6 +481,44 @@ pub fn unlink_reference(
     let current = lock(&current.0);
     let conn = libraries::library_for_writing(&current, session)?;
     references::unlink(conn, &paper_id)
+}
+
+/// The paper a `[#n]` link opens, if any (FR-05.5).
+#[tauri::command(async)]
+pub fn paper_for_ref_no(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    ref_no: i64,
+) -> Result<Option<String>, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_reading(&current, session)?;
+    ref_links::paper_for(conn, ref_no)
+}
+
+/// How many notes still link to a reference number that was changed.
+#[tauri::command(async)]
+pub fn count_note_links(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    from: i64,
+    to: i64,
+) -> Result<usize, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_reading(&current, session)?;
+    ref_links::count(conn, from, to)
+}
+
+/// Updates those links, after the user has confirmed it.
+#[tauri::command(async)]
+pub fn update_note_links(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    from: i64,
+    to: i64,
+) -> Result<usize, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    ref_links::update(conn, from, to)
 }
 
 /// A file chosen with "Choose CSV file".

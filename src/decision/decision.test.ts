@@ -37,7 +37,7 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 async function show(readOnly = false, listeners: Parameters<typeof createDecisionStore>[0] = {}) {
   const store = createDecisionStore(listeners);
   const ondelete = vi.fn();
-  render(DecisionPanel, { store, name: "kim-2021.pdf", readOnly, ondelete, onsettings: vi.fn() });
+  render(DecisionPanel, { store, name: "kim-2021.pdf", readOnly, ondelete, onsettings: vi.fn(), onopenref: vi.fn() });
   await store.open(7, "p1");
   await tick();
   return { store, ondelete };

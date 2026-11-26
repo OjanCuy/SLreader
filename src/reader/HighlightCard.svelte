@@ -1,13 +1,14 @@
 <!--
   HighlightCard (FR-03.3, FR-03.4; Brief Section 8): category swatch (click to change
-  it), page, tag, the highlighted text (click to jump to it), note, and delete.
-  Text approved in T-21. [#n] links in notes come with T-27.
+  it), page, tag, the highlighted text (click to jump to it), note with its [#n]
+  links (FR-03.6), and delete. Text approved in T-21.
 -->
 <script lang="ts">
   import type { ExtractionTag, Highlight, HighlightCategory } from "../lib/api";
   import Button from "../lib/components/Button.svelte";
   import IconButton from "../lib/components/IconButton.svelte";
   import Icon from "../lib/components/Icon.svelte";
+  import RefLinks from "../lib/components/RefLinks.svelte";
   import Select from "../lib/components/Select.svelte";
   import TextArea from "../lib/components/TextArea.svelte";
 
@@ -27,6 +28,8 @@
     ondelete: () => void;
     /** Opens Settings at the extraction tags. */
     onsettings: () => void;
+    /** A [#n] link was clicked. */
+    onopenref: (refNo: number) => void;
   }
 
   let {
@@ -43,6 +46,7 @@
     onnotedone,
     ondelete,
     onsettings,
+    onopenref,
   }: Props = $props();
 
   const id = $props.id();
@@ -141,6 +145,7 @@
     onblur={onnotedone}
   />
   <span class="saved" role="status">{saved ? "Saved" : ""}</span>
+  <RefLinks note={highlight.note} onopen={onopenref} />
 </li>
 
 <style>

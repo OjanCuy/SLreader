@@ -55,7 +55,7 @@ afterEach(() => {
 async function show(readOnly = false) {
   const store = createHighlightStore();
   render(ToastRegion);
-  const view = render(HighlightsPanel, { store, readOnly, onsettings: vi.fn() });
+  const view = render(HighlightsPanel, { store, readOnly, onsettings: vi.fn(), onopenref: vi.fn() });
   await store.open(7, "p1");
   await new Promise((resolve) => setTimeout(resolve, 0));
   return { store, view };

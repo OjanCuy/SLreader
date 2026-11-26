@@ -10,12 +10,15 @@
   import { createDecisionStore } from "../decision/decisionStore.svelte";
   import SummaryBar from "../decision/SummaryBar.svelte";
   import {
+    countNoteLinks,
     deletePaper,
     getSummary,
     importPdfs,
     listPapers,
     onPaperTextChanged,
+    paperForRefNo,
     pickPdfs,
+    updateNoteLinks,
     type LibrarySummary,
     type PaperListItem,
     type Summary,
@@ -30,7 +33,14 @@
   import { dismissToast, showToast } from "../lib/components/toasts.svelte";
   import { ADD_ANYWAY, identicalMessage, importMessages, SKIP } from "../lib/importTexts";
   import { LIBRARY_PROBLEMS } from "../lib/libraryProblems";
-  import { CLOUD_WARNING, libraryErrorMessage, libraryTitle } from "../lib/libraryTexts";
+  import {
+    CLOUD_WARNING,
+    GENERIC_ERROR,
+    libraryErrorMessage,
+    libraryTitle,
+    SAVE_ERROR,
+  } from "../lib/libraryTexts";
+  import { noPaperMessage, updatedMessage } from "../lib/refLinks";
   import { createHighlightStore } from "../reader/highlightStore.svelte";
   import HighlightsPanel from "../reader/HighlightsPanel.svelte";
   import Reader from "../reader/Reader.svelte";
@@ -41,6 +51,7 @@
   import DropZone from "./DropZone.svelte";
   import ImportReferencesDialog from "./ImportReferencesDialog.svelte";
   import LibrarySwitcher from "./LibrarySwitcher.svelte";
+  import RenumberLinksDialog from "./RenumberLinksDialog.svelte";
 
   interface Props {
     library: LibrarySummary;
@@ -64,7 +75,11 @@
   const decisions = createDecisionStore({
     onsaved: () => refreshSummary(),
     onmetadatasaved: () => refresh(),
+    onrenumbered: (from, to) => offerRenumber(from, to),
   });
+  /** Changed reference numbers whose note links the user is asked about, oldest first. */
+  let offers = $state.raw<{ from: number; to: number; count: number }[]>([]);
+  let renumbering = $state(false);
   const settings = createSettingsStore(() => session);
   /** The Settings section on screen; null while the workspace is shown. */
   let settingsSection = $state<SettingsSection | null>(null);
@@ -89,7 +104,7 @@
   let deleting = $state(false);
   let importingReferences = $state(false);
 
-  /** Open "Add anyway / Skip" questions; they belong to this library only. */
+  /** Open toasts with a question or "Try again"; they belong to this library only. */
   const questions: number[] = [];
 
   onMount(() => {
@@ -107,6 +122,59 @@
       stop.then((unlisten) => unlisten()).catch(() => {});
     };
   });
+
+  /** Opens the paper a [#n] link points to (FR-05.5). */
+  async function openReference(refNo: number) {
+    try {
+      const id = await paperForRefNo(session, refNo);
+      if (id === null) showToast(noPaperMessage(refNo));
+      else selected = id;
+    } catch (failure) {
+      console.error("The link could not be followed", failure);
+      showToast(GENERIC_ERROR, "error");
+    }
+  }
+
+  /** Asks about the note links to a changed number, if any note has one. */
+  async function offerRenumber(from: number, to: number) {
+    try {
+      // The count includes what was just typed in a note.
+      await Promise.all([decisions.settle(), highlights.settle()]);
+      const count = await countNoteLinks(session, from, to);
+      if (count > 0) offers = [...offers, { from, to, count }];
+    } catch (failure) {
+      console.error("The note links could not be counted", failure);
+      showToast(GENERIC_ERROR, "error");
+    }
+  }
+
+  async function updateLinks(from: number, to: number) {
+    // A note saved afterwards would bring back the old link.
+    await Promise.all([decisions.settle(), highlights.settle()]);
+    try {
+      const count = await updateNoteLinks(session, from, to);
+      decisions.renumberNotes(from, to);
+      highlights.renumberNotes(from, to);
+      showToast(updatedMessage(count), "success");
+    } catch (failure) {
+      console.error("The note links could not be updated", failure);
+      const retry = { label: "Try again", onselect: () => updateLinks(from, to) };
+      // Belongs to this library: dismissed with its other questions.
+      questions.push(showToast(SAVE_ERROR, "error", [retry]));
+    }
+  }
+
+  async function confirmRenumber() {
+    const offer = offers[0];
+    if (!offer || renumbering) return;
+    renumbering = true;
+    try {
+      await updateLinks(offer.from, offer.to);
+    } finally {
+      renumbering = false;
+      offers = offers.slice(1);
+    }
+  }
 
   function openSettings(section: SettingsSection = "questions") {
     settingsOpener = document.activeElement as HTMLElement | null;
@@ -311,12 +379,14 @@
               readOnly={problem?.readOnly ?? false}
               ondelete={() => (confirming = selectedPaper)}
               onsettings={() => openSettings("exclusion")}
+              onopenref={openReference}
             />
           {:else}
             <HighlightsPanel
               store={highlights}
               readOnly={problem?.readOnly ?? false}
               onsettings={() => openSettings("tag")}
+              onopenref={openReference}
             />
           {/if}
         </div>
@@ -331,6 +401,15 @@
     busy={deleting}
     onconfirm={confirmDelete}
     onclose={() => (confirming = null)}
+  />
+{/if}
+
+{#if offers[0]}
+  <RenumberLinksDialog
+    {...offers[0]}
+    busy={renumbering}
+    onconfirm={confirmRenumber}
+    onclose={() => (offers = offers.slice(1))}
   />
 {/if}
 

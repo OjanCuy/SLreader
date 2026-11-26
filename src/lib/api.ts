@@ -467,6 +467,23 @@ export function unlinkReference(session: number, paperId: string): Promise<void>
   return invoke("unlink_reference", { session, paperId });
 }
 
+// ---- [#n] links in notes (FR-05.5). ----
+
+/** The paper a `[#n]` link opens; null when no paper has the number. */
+export function paperForRefNo(session: number, refNo: number): Promise<string | null> {
+  return invoke("paper_for_ref_no", { session, refNo });
+}
+
+/** How many notes an update would change; 0 when there is nothing to offer. */
+export function countNoteLinks(session: number, from: number, to: number): Promise<number> {
+  return invoke("count_note_links", { session, from, to });
+}
+
+/** Only after the user has confirmed. Resolves to how many notes changed. */
+export function updateNoteLinks(session: number, from: number, to: number): Promise<number> {
+  return invoke("update_note_links", { session, from, to });
+}
+
 /** Shows the system file picker for one PDF. Null when the user cancels. */
 export function pickPdf(): Promise<string | null> {
   return invoke("pick_pdf");

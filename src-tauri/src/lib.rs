@@ -7,6 +7,7 @@ pub mod highlights;
 pub mod libraries;
 pub mod metadata;
 pub mod papers;
+pub mod ref_links;
 pub mod references;
 pub mod settings;
 pub mod sync;
@@ -104,6 +105,9 @@ pub fn run() {
             commands::list_references,
             commands::link_reference,
             commands::unlink_reference,
+            commands::paper_for_ref_no,
+            commands::count_note_links,
+            commands::update_note_links,
             commands::list_criteria,
             commands::add_criterion,
             commands::update_criterion,

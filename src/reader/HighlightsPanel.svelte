@@ -15,9 +15,11 @@
     readOnly: boolean;
     /** Opens Settings at the extraction tags. */
     onsettings: () => void;
+    /** A [#n] link was clicked. */
+    onopenref: (refNo: number) => void;
   }
 
-  let { store, readOnly, onsettings }: Props = $props();
+  let { store, readOnly, onsettings, onopenref }: Props = $props();
 
   /** The highlight in the "Delete highlight?" dialog. */
   let confirming = $state.raw<Highlight | null>(null);
@@ -74,6 +76,7 @@
             onnotedone={() => store.flush(highlight.id)}
             ondelete={() => (confirming = highlight)}
             {onsettings}
+            {onopenref}
           />
         {/each}
       </ul>

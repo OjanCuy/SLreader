@@ -20,6 +20,7 @@ import {
 import { dismissToast, showToast } from "../lib/components/toasts.svelte";
 import { GENERIC_ERROR, SAVE_ERROR } from "../lib/libraryTexts";
 import { crossPageMessage } from "./highlights";
+import { renumberLinks } from "../lib/refLinks";
 
 /** A note is saved this long after the last key press, and when its field is left. */
 export const NOTE_SAVE_DELAY_MS = 600;
@@ -197,6 +198,21 @@ export function createHighlightStore() {
     }
   }
 
+  /** Saves what is waiting and resolves when every save is over. */
+  async function settle(): Promise<void> {
+    flush();
+    await Promise.all(saving.values());
+  }
+
+  /**
+   * The note links were updated in the database: the same change to the cards and to
+   * what is still unsaved.
+   */
+  function renumberNotes(from: number, to: number): void {
+    for (const { edit } of unsaved.values()) edit.note = renumberLinks(edit.note, from, to);
+    highlights = highlights.map((each) => ({ ...each, note: renumberLinks(each.note, from, to) }));
+  }
+
   /** Deletes a highlight. Only call it after the user has confirmed. */
   async function remove(id: string): Promise<void> {
     const ofSession = session;
@@ -269,6 +285,8 @@ export function createHighlightStore() {
     edit,
     editNote,
     flush,
+    settle,
+    renumberNotes,
     remove,
     show,
   };

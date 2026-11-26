@@ -55,7 +55,7 @@ afterEach(() => {
 
 async function show(readOnly = false) {
   const store = createDecisionStore();
-  render(DecisionPanel, { store, name: FILE, readOnly, ondelete: vi.fn(), onsettings: vi.fn() });
+  render(DecisionPanel, { store, name: FILE, readOnly, ondelete: vi.fn(), onsettings: vi.fn(), onopenref: vi.fn() });
   await store.open(7, "p1");
   await new Promise((resolve) => setTimeout(resolve, 0));
   return store;
