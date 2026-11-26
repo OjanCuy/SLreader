@@ -9,7 +9,7 @@ use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::backup::{self, RestorePreview, RestoreReport};
-use crate::criteria::{self, ListKind};
+use crate::criteria::{self, Item, ListKind, NewItem};
 use crate::decisions::{self, Decision, ExclusionReason, Screening, Summary};
 use crate::export::{self, Written, markdown, markdown::MarkdownExport};
 use crate::extraction::Extraction;
@@ -785,6 +785,19 @@ pub fn add_criterion(
     let current = lock(&current.0);
     let conn = libraries::library_for_writing(&current, session)?;
     criteria::add(conn, kind, &code, &label)
+}
+
+/// "Load a template" (Brief O-09): adds the items the list lacks.
+#[tauri::command(async)]
+pub fn add_template_items(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    kind: ListKind,
+    items: Vec<NewItem>,
+) -> Result<Vec<Item>, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    criteria::add_missing(conn, kind, &items)
 }
 
 /// Renames a criterion or tag.

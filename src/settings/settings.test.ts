@@ -321,3 +321,109 @@ describe("the Settings screen", () => {
     expect(onclose).toHaveBeenCalledOnce();
   });
 });
+
+describe("Load a template (O-09)", () => {
+  const openTemplate = async () => {
+    await fireEvent.click(screen.getByRole("button", { name: "Load a template" }));
+    return within(await screen.findByRole("dialog"));
+  };
+
+  beforeEach(() => {
+    mocked.addTemplateItems.mockImplementation(async (_session, _kind, items) =>
+      items.map((item, at) => ({ id: `t${at}`, ...item })),
+    );
+  });
+
+  it("is offered for exclusion reasons and tags only, and not in a read-only library", async () => {
+    for (const kind of ["inclusion", "questions"] as const) {
+      await show(kind);
+      expect(screen.queryByRole("button", { name: "Load a template" })).toBeNull();
+      cleanup();
+    }
+    await show("exclusion", true);
+    expect(screen.queryByRole("button", { name: "Load a template" })).toBeNull();
+    cleanup();
+    await show("tag");
+    expect(screen.getByRole("button", { name: "Load a template" })).toBeTruthy();
+  });
+
+  it("adds only the codes the list lacks, after asking", async () => {
+    await show();
+    const dialog = await openTemplate();
+    // E1 and E2 are there.
+    expect(dialog.getByText("7 items will be added. Items you already have are skipped.")).toBeTruthy();
+    expect(dialog.getByText("E3 - Not about fish farming operating systems")).toBeTruthy();
+    expect(dialog.queryByText(/^E1 - /)).toBeNull();
+    expect(mocked.addTemplateItems).not.toHaveBeenCalled();
+
+    await fireEvent.click(dialog.getByRole("button", { name: "Load" }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(mocked.addTemplateItems.mock.calls[0]![2].map((item) => item.code)).toEqual(
+      ["E3", "E4", "E5", "E6", "E7", "E8", "E9"],
+    );
+    expect(rows()).toHaveLength(9);
+    expect(field(0, "Description").value).toBe("Review article");
+    expect(field(8, "Code").value).toBe("E9");
+    expect(messages()).toEqual(["Saved"]);
+    expect(mocked.addCriterion).not.toHaveBeenCalled();
+    expect(mocked.updateCriterion).not.toHaveBeenCalled();
+  });
+
+  it("drops an empty new row, whose code does not count", async () => {
+    mocked.listCriteria.mockResolvedValue([]);
+    await show();
+    await fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    const dialog = await openTemplate();
+    expect(dialog.getByText("9 items will be added. Items you already have are skipped.")).toBeTruthy();
+    await fireEvent.click(dialog.getByRole("button", { name: "Load" }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(rows()).toHaveLength(9);
+  });
+
+  it("saves what is typed first", async () => {
+    mocked.listCriteria.mockResolvedValue([]);
+    await show();
+    await fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await fireEvent.input(field(0, "Description"), { target: { value: "Mine" } });
+    const dialog = await openTemplate();
+    expect(mocked.addCriterion).toHaveBeenCalledExactlyOnceWith(7, "exclusion", "E1", "Mine");
+    expect(dialog.getByText("8 items will be added. Items you already have are skipped.")).toBeTruthy();
+  });
+
+  it("matches tags by name, and has nothing to load when all are there", async () => {
+    mocked.listCriteria.mockResolvedValue(
+      ["species", "RAS scale", "Intervention", "Trial duration", "FCR", "Quantitative results", "Limitations"].map(
+        (label, at) => ({ id: `t${at}`, code: "", label }),
+      ),
+    );
+    await show("tag");
+    const dialog = await openTemplate();
+    expect(dialog.getByText("This list already has every item in the template.")).toBeTruthy();
+    expect((dialog.getByRole("button", { name: "Load" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("changes nothing on Cancel", async () => {
+    await show();
+    await fireEvent.click((await openTemplate()).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(mocked.addTemplateItems).not.toHaveBeenCalled();
+    expect(rows()).toHaveLength(2);
+  });
+
+  it("stays open with a message when it cannot be saved", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mocked.addTemplateItems.mockRejectedValueOnce(new Error("disk full"));
+    await show();
+    const dialog = await openTemplate();
+    await fireEvent.click(dialog.getByRole("button", { name: "Load" }));
+    expect(
+      await dialog.findByText("Couldn't save: the disk is full or the folder is read-only."),
+    ).toBeTruthy();
+    // The dialog has list items of its own; each row of the list has one description.
+    const descriptions = () => screen.getAllByRole("textbox", { name: "Description" });
+    expect(descriptions()).toHaveLength(2);
+    await fireEvent.click(dialog.getByRole("button", { name: "Load" }));
+    await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(descriptions()).toHaveLength(9);
+  });
+});

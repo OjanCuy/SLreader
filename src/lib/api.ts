@@ -399,6 +399,15 @@ export function addCriterion(session: number, kind: CriteriaKind, code: string, 
   return invoke("add_criterion", { session, kind, code, label });
 }
 
+/** "Load a template": adds the items the list lacks and resolves to them. */
+export function addTemplateItems(
+  session: number,
+  kind: CriteriaKind,
+  items: { code: string; label: string }[],
+): Promise<Criterion[]> {
+  return invoke("add_template_items", { session, kind, items });
+}
+
 export function updateCriterion(
   session: number,
   kind: CriteriaKind,

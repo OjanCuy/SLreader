@@ -9,6 +9,8 @@
 //! Every function receives the connection of the open library from
 //! `libraries::library_for_*` (FR-14.4).
 
+use std::collections::HashSet;
+
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +94,36 @@ pub fn add(conn: &Connection, kind: ListKind, code: &str, label: &str) -> Result
     Ok(id)
 }
 
+/// An item of a template (Brief O-09).
+#[derive(Debug, Clone, Deserialize)]
+pub struct NewItem {
+    /// Empty for a tag.
+    pub code: String,
+    pub label: String,
+}
+
+/// "Load a template": adds, at the end of the list and in one transaction, the items
+/// the list lacks, and returns them. A criterion is there when its code is, a tag when
+/// its name is, whatever the letter case. Items of the list are never changed.
+pub fn add_missing(conn: &Connection, kind: ListKind, items: &[NewItem]) -> Result<Vec<Item>, LibraryError> {
+    let key = |code: &str, label: &str| if kind.has_code() { code } else { label }.trim().to_lowercase();
+    let transaction = conn.unchecked_transaction()?;
+    let mut known: HashSet<String> =
+        list(&transaction, kind)?.iter().map(|item| key(&item.code, &item.label)).collect();
+    let mut added = Vec::new();
+    for item in items {
+        let (code, label) = checked(kind, &item.code, &item.label)?;
+        let code = if kind.has_code() { code } else { "" };
+        if !known.insert(key(code, label)) {
+            continue;
+        }
+        let id = add(&transaction, kind, code, label)?;
+        added.push(Item { id, code: code.to_string(), label: label.to_string() });
+    }
+    transaction.commit()?;
+    Ok(added)
+}
+
 /// Renames an item. Codes may repeat: the UI warns about it.
 pub fn update(conn: &Connection, kind: ListKind, id: &str, code: &str, label: &str) -> Result<(), LibraryError> {
     let (code, label) = checked(kind, code, label)?;
@@ -168,6 +200,59 @@ pub fn set_research_questions(conn: &Connection, text: &str) -> Result<(), Libra
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn template(items: &[(&str, &str)]) -> Vec<NewItem> {
+        items.iter().map(|(code, label)| NewItem { code: code.to_string(), label: label.to_string() }).collect()
+    }
+
+    fn template_library() -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::db::library::create_library(dir.path(), "R").unwrap();
+        (dir, conn)
+    }
+
+    #[test]
+    fn a_template_adds_only_what_is_missing_after_the_librarys_own_items() {
+        let (_dir, conn) = template_library();
+        add(&conn, ListKind::Exclusion, "e2", "My own words").unwrap();
+        add(&conn, ListKind::Tag, "", "fcr").unwrap();
+        let reasons = template(&[("E1", "One"), ("E2", "Two"), ("E3", "Three")]);
+
+        let added = add_missing(&conn, ListKind::Exclusion, &reasons).unwrap();
+        assert_eq!(added.iter().map(|i| i.code.as_str()).collect::<Vec<_>>(), ["E1", "E3"]);
+        let listed = list(&conn, ListKind::Exclusion).unwrap();
+        assert_eq!(
+            listed.iter().map(|i| (i.code.as_str(), i.label.as_str())).collect::<Vec<_>>(),
+            [("e2", "My own words"), ("E1", "One"), ("E3", "Three")]
+        );
+        assert_eq!(listed[1..], added[..]);
+        // Loading it again adds nothing.
+        assert!(add_missing(&conn, ListKind::Exclusion, &reasons).unwrap().is_empty());
+
+        let tags = template(&[("", "Species"), ("", "FCR"), ("", "species")]);
+        assert_eq!(add_missing(&conn, ListKind::Tag, &tags).unwrap().len(), 1);
+        assert_eq!(list(&conn, ListKind::Tag).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_template_that_cannot_be_saved_adds_nothing() {
+        let (_dir, conn) = template_library();
+        let broken = template(&[("E1", "One"), ("E2", " ")]);
+        assert!(add_missing(&conn, ListKind::Exclusion, &broken).is_err());
+        assert!(list(&conn, ListKind::Exclusion).unwrap().is_empty());
+    }
+
+    #[test]
+    fn loading_a_template_never_changes_a_paper() {
+        // Rule 1: decisions and reasons stay as the user set them.
+        let (_dir, conn) = template_library();
+        conn.execute("INSERT INTO paper (title, decision) VALUES ('A', 'exclude')", []).unwrap();
+        add_missing(&conn, ListKind::Exclusion, &template(&[("E1", "One")])).unwrap();
+        let paper: (String, Option<String>) = conn
+            .query_row("SELECT decision, exclusion_reason_id FROM paper", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(paper, ("exclude".to_string(), None));
+    }
     use crate::db::library::{create_library, open_library};
 
     const ALL: [ListKind; 3] = [ListKind::Inclusion, ListKind::Exclusion, ListKind::Tag];

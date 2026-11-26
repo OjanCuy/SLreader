@@ -3,7 +3,7 @@
   drag handle, code and description (a tag has a name only; a research question has a
   number that follows its place), delete, and "Add".
   Every delete of a saved row is confirmed (O-10). The handle also moves its row with
-  the arrow keys.
+  the arrow keys. Exclusion reasons and tags also have "Load a template" (O-09).
 -->
 <script lang="ts">
   import { tick, untrack } from "svelte";
@@ -24,6 +24,8 @@
     REQUIRED,
     type SettingsSection,
   } from "./settingsTexts";
+  import TemplateDialog from "./TemplateDialog.svelte";
+  import { hasTemplate, LOAD_TEMPLATE } from "./templates";
 
   interface Props {
     store: SettingsStore;
@@ -59,6 +61,16 @@
     await tick();
     // The description of the new row; its code is already filled in.
     items?.querySelector<HTMLInputElement>("li:last-child .label input")?.focus();
+  }
+
+  // ---- Template ----
+
+  let templateOpen = $state(false);
+
+  async function openTemplate() {
+    // What is typed is saved first, so that the dialog counts it.
+    await store.flush();
+    templateOpen = true;
   }
 
   // ---- Delete ----
@@ -215,8 +227,17 @@
   {/if}
 
   {#if !readOnly}
-    <div><Button icon="plus" onclick={add}>Add</Button></div>
+    <div class="actions">
+      <Button icon="plus" onclick={add}>Add</Button>
+      {#if hasTemplate(kind)}
+        <Button variant="ghost" onclick={openTemplate}>{LOAD_TEMPLATE}</Button>
+      {/if}
+    </div>
   {/if}
+{/if}
+
+{#if templateOpen && hasTemplate(kind)}
+  <TemplateDialog {store} {kind} onclose={() => (templateOpen = false)} />
 {/if}
 
 {#if confirming}
@@ -312,6 +333,12 @@
 
   .dragging .handle {
     cursor: grabbing;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
   }
 
   .note {

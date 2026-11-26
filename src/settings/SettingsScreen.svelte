@@ -1,7 +1,7 @@
 <!--
   S-04 Settings, the "This library" group (FR-08.1, FR-08.2, FR-08.4). It covers the
   workspace, which stays as it was behind it. The "App" group comes with T-37 and
-  T-41, "Load a template" with T-36. Text approved in T-35.
+  T-41. Text approved in T-35.
 -->
 <script lang="ts">
   import { onMount } from "svelte";

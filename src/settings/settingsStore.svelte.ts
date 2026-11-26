@@ -11,6 +11,7 @@
 
 import {
   addCriterion,
+  addTemplateItems,
   countCriterionUses,
   deleteCriterion,
   getResearchQuestions,
@@ -23,6 +24,7 @@ import {
 import { dismissToast, showToast } from "../lib/components/toasts.svelte";
 import { GENERIC_ERROR, SAVE_ERROR } from "../lib/libraryTexts";
 import { nextCode, SAVED, type SettingsSection } from "./settingsTexts";
+import type { TemplateItem, TemplateKind } from "./templates";
 
 /** Typed text is saved this long after the last key press, and when its field is left. */
 export const SAVE_DELAY_MS = 600;
@@ -84,14 +86,7 @@ export function createSettingsStore(session: () => number) {
     if (list.status === "loading" || list.status === "ready") return;
     list.status = "loading";
     try {
-      list.rows = (await read(kind)).map(({ id, code, label }) => ({
-        key: ++keys,
-        id,
-        code,
-        label,
-        stored: { code, label },
-        touched: { code: false, label: false },
-      }));
+      list.rows = (await read(kind)).map(savedRow);
       list.status = "ready";
     } catch (failure) {
       console.error("The list could not be read", failure);
@@ -188,6 +183,43 @@ export function createSettingsStore(session: () => number) {
   function leave(row: Row, field: "code" | "label"): void {
     row.touched[field] = true;
     waiting.get(`row-${row.key}`)?.run();
+  }
+
+  /** A saved item as a row of a list. */
+  function savedRow({ id, code, label }: { id: string; code: string; label: string }): Row {
+    return {
+      key: ++keys,
+      id,
+      code,
+      label,
+      stored: { code, label },
+      touched: { code: false, label: false },
+    };
+  }
+
+  /**
+   * "Load a template": saves the items the list lacks and shows them at its end.
+   * Resolves to false when they could not be saved; then nothing was added.
+   */
+  async function addTemplate(kind: TemplateKind, items: TemplateItem[]): Promise<boolean> {
+    let saved = true;
+    const done = queue.then(async () => {
+      try {
+        const added = await addTemplateItems(session(), kind, items);
+        // Rows added but never filled in would sit between the old and the new ones.
+        for (const row of lists[kind].rows.filter((row) => row.id === null && row.label.trim() === "")) {
+          drop(kind, row);
+        }
+        lists[kind].rows.push(...added.map(savedRow));
+        if (added.length > 0) showSaved();
+      } catch (failure) {
+        console.error("The template could not be saved", failure);
+        saved = false;
+      }
+    });
+    queue = done;
+    await done;
+    return saved;
   }
 
   function add(kind: SettingsSection): Row {
@@ -288,6 +320,7 @@ export function createSettingsStore(session: () => number) {
     edit,
     leave,
     add,
+    addTemplate,
     move,
     saveOrder,
     askToRemove,

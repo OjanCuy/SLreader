@@ -121,6 +121,7 @@ pub fn run() {
             commands::create_library_from_backup,
             commands::list_criteria,
             commands::add_criterion,
+            commands::add_template_items,
             commands::update_criterion,
             commands::count_criterion_uses,
             commands::delete_criterion,
