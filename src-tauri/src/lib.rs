@@ -6,6 +6,7 @@ pub mod highlights;
 pub mod libraries;
 pub mod metadata;
 pub mod papers;
+pub mod references;
 pub mod settings;
 pub mod sync;
 pub mod text;
@@ -97,6 +98,8 @@ pub fn run() {
             commands::get_summary,
             commands::get_metadata,
             commands::set_metadata,
+            commands::import_references,
+            commands::pick_reference_file,
             commands::delete_paper,
             commands::get_last_page,
             commands::save_last_page,

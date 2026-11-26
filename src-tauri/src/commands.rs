@@ -13,6 +13,7 @@ use crate::highlights::{self, ExtractionTag, Highlight, HighlightCategory, Highl
 use crate::libraries::{self, LibraryError, LibrarySummary};
 use crate::metadata::{self, Metadata, PaperMetadata};
 use crate::papers::{self, ImportOutcome, ImportReport, PaperListItem};
+use crate::references;
 use crate::settings::{self, PageMode};
 use crate::{AppDb, CurrentLibrary};
 
@@ -427,6 +428,46 @@ pub fn set_metadata(
     let current = lock(&current.0);
     let conn = libraries::library_for_writing(&current, session)?;
     metadata::set_metadata(conn, &paper_id, &metadata)
+}
+
+/// Replaces the reference list with the rows in `text` (FR-05.2). `replace` is the
+/// user's confirmation; without it an existing list is kept.
+#[tauri::command(async)]
+pub fn import_references(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    text: String,
+    replace: bool,
+) -> Result<references::ImportResult, LibraryError> {
+    let current = lock(&current.0);
+    let conn = libraries::library_for_writing(&current, session)?;
+    references::import(conn, &text, replace)
+}
+
+/// A file chosen with "Choose CSV file".
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReferenceFile {
+    file_name: String,
+    /// `None` when the file cannot be read as text.
+    text: Option<String>,
+}
+
+/// Shows the system file picker for a reference list and reads the chosen file.
+/// `None` when the user cancels.
+#[tauri::command(async)]
+pub fn pick_reference_file(app: AppHandle, window: WebviewWindow) -> Option<ReferenceFile> {
+    let path = app
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .add_filter("CSV", &["csv", "tsv", "txt"])
+        .blocking_pick_file()
+        .and_then(|file| file.into_path().ok())?;
+    Some(ReferenceFile {
+        file_name: path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        text: references::read_file(&path),
+    })
 }
 
 /// The page mode, an app setting shared by all libraries (FR-02.2).

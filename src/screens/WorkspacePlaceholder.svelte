@@ -35,6 +35,7 @@
   import Reader from "../reader/Reader.svelte";
   import DeletePaperDialog from "./DeletePaperDialog.svelte";
   import DropZone from "./DropZone.svelte";
+  import ImportReferencesDialog from "./ImportReferencesDialog.svelte";
   import LibrarySwitcher from "./LibrarySwitcher.svelte";
 
   interface Props {
@@ -77,6 +78,7 @@
   /** The paper in the "Delete paper?" dialog. */
   let confirming = $state<PaperListItem | null>(null);
   let deleting = $state(false);
+  let importingReferences = $state(false);
 
   /** Open "Add anyway / Skip" questions; they belong to this library only. */
   const questions: number[] = [];
@@ -200,7 +202,12 @@
   <header>
     <LibrarySwitcher current={library} {onswitch} {onshowall} />
     {#if summary}<SummaryBar {summary} />{/if}
-    <div class="actions">{@render uploadButton()}</div>
+    <div class="actions">
+      {@render uploadButton()}
+      <Button disabled={problem?.readOnly} onclick={() => (importingReferences = true)}>
+        Import references
+      </Button>
+    </div>
   </header>
 
   <div class="body" class:with-panel={selectedPaper}>
@@ -293,6 +300,10 @@
   />
 {/if}
 
+{#if importingReferences}
+  <ImportReferencesDialog {session} onclose={() => (importingReferences = false)} />
+{/if}
+
 <DropZone ondrop={importPaths} />
 
 <style>
@@ -350,6 +361,11 @@
     gap: var(--space-3);
     padding: var(--space-2) var(--panel-padding);
     border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .actions {
+    display: flex;
+    gap: var(--space-2);
   }
 
   h1 {

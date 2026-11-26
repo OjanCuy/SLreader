@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use crate::libraries::{ErrorCode, LibraryError};
 
 /// Largest reference number and year the fields accept.
-const MAX_REF_NO: i64 = 999_999_999;
-const MAX_YEAR: i64 = 9999;
+pub(crate) const MAX_REF_NO: i64 = 999_999_999;
+pub(crate) const MAX_YEAR: i64 = 9999;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

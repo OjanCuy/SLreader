@@ -349,6 +349,31 @@ export function setMetadata(session: number, paperId: string, metadata: Metadata
   return invoke("set_metadata", { session, paperId, metadata });
 }
 
+// ---- Reference list (FR-05.2). Types mirror src-tauri/src/references.rs. ----
+
+export type ReferenceImport =
+  /** No usable row; the old list is unchanged. */
+  | { status: "empty" }
+  /** A list exists: nothing changed, ask the user before replacing it. */
+  | { status: "needs_confirmation"; existing: number }
+  | { status: "imported"; imported: number; skipped: number; duplicates: number[] };
+
+/** `replace` only after the user has confirmed replacing the existing list. */
+export function importReferences(session: number, text: string, replace = false): Promise<ReferenceImport> {
+  return invoke("import_references", { session, text, replace });
+}
+
+export interface ReferenceFile {
+  fileName: string;
+  /** Null when the file cannot be read as text. */
+  text: string | null;
+}
+
+/** Shows the system file picker for a CSV file and reads it. Null when the user cancels. */
+export function pickReferenceFile(): Promise<ReferenceFile | null> {
+  return invoke("pick_reference_file");
+}
+
 /** Shows the system file picker for one PDF. Null when the user cancels. */
 export function pickPdf(): Promise<string | null> {
   return invoke("pick_pdf");

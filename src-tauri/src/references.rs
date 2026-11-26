@@ -1,0 +1,466 @@
+//! The reference list: reading a CSV file or rows pasted from Excel, and replacing
+//! the library's list with them (FR-05.2).
+//!
+//! The separator (tab, semicolon, comma) and an English or Indonesian header row are
+//! recognized. A row without a reference number or a title is skipped and counted.
+//! An existing list is replaced only when the user has confirmed it, and never by an
+//! import without a single usable row. Papers keep their metadata; the database only
+//! removes their link to an old reference (`ON DELETE SET NULL`).
+//!
+//! Every function that touches the database receives the connection of the open
+//! library from `libraries::library_for_*` (FR-14.4).
+
+use std::collections::BTreeMap;
+use std::io::Read;
+use std::path::Path;
+
+use rusqlite::{Connection, params};
+use serde::Serialize;
+
+use crate::libraries::LibraryError;
+use crate::metadata::{MAX_REF_NO, MAX_YEAR};
+
+/// A reference list of several thousand rows is far below this.
+const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
+
+/// In order of preference when two separators read the text equally well.
+const SEPARATORS: [char; 3] = ['\t', ';', ','];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reference {
+    pub no: i64,
+    pub title: String,
+    pub year: Option<i64>,
+    pub source_database: Option<String>,
+    pub doi: Option<String>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ParsedList {
+    pub rows: Vec<Reference>,
+    /// Rows without a usable reference number or without a title.
+    pub skipped: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum ImportResult {
+    /// No usable row; the old list is unchanged.
+    Empty,
+    /// A list already exists and the user has not confirmed replacing it.
+    NeedsConfirmation { existing: usize },
+    Imported {
+        imported: usize,
+        skipped: usize,
+        /// Reference numbers that appear on more than one imported row, ascending.
+        duplicates: Vec<i64>,
+    },
+}
+
+/// Which column holds which field.
+#[derive(Debug, Clone, Copy)]
+struct Columns {
+    no: usize,
+    title: usize,
+    year: Option<usize>,
+    source_database: Option<usize>,
+    doi: Option<usize>,
+}
+
+/// Without a header row, the columns are in the order of FR-05.2.
+const DEFAULT_COLUMNS: Columns =
+    Columns { no: 0, title: 1, year: Some(2), source_database: Some(3), doi: Some(4) };
+
+/// The columns named by a header row, or `None` if the row names no reference number
+/// and title column.
+fn header(row: &[String]) -> Option<Columns> {
+    let names: Vec<String> = row
+        .iter()
+        .map(|cell| cell.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect())
+        .collect();
+    // The first name wins, so "Reference No" is preferred over a row counter "No".
+    let find = |wanted: &[&str]| wanted.iter().find_map(|name| names.iter().position(|n| n == name));
+    Some(Columns {
+        no: find(&[
+            "referenceno",
+            "noreferensi",
+            "referencenumber",
+            "nomorreferensi",
+            "refno",
+            "noref",
+            "no",
+            "nomor",
+            "number",
+        ])?,
+        title: find(&["title", "judul", "judulartikel"])?,
+        year: find(&["year", "tahun", "publicationyear", "tahunterbit"]),
+        source_database: find(&[
+            "sourcedatabase",
+            "sumberdatabase",
+            "databasesumber",
+            "database",
+            "source",
+            "sumber",
+        ]),
+        doi: find(&["doi"]),
+    })
+}
+
+/// Splits CSV text into rows of cells. A cell in quotes may hold the separator, line
+/// breaks, and doubled quotes. A quote that does not enclose a whole cell, as in
+/// `"Smart" ponds`, is ordinary text.
+fn split_rows(text: &str, separator: char) -> Vec<Vec<String>> {
+    let chars: Vec<char> = text.chars().collect();
+    let ends_cell = |c: Option<&char>| c.is_none_or(|&c| c == separator || c == '\n' || c == '\r');
+    // The content of a quoted cell starting at `start`, and where it ends.
+    let quoted = |start: usize| {
+        let mut cell = String::new();
+        let mut i = start + 1;
+        while i < chars.len() {
+            if chars[i] != '"' {
+                cell.push(chars[i]);
+                i += 1;
+            } else if chars.get(i + 1) == Some(&'"') {
+                cell.push('"');
+                i += 2;
+            } else {
+                return ends_cell(chars.get(i + 1)).then_some((cell, i + 1));
+            }
+        }
+        None
+    };
+
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let (cell, mut end) = match (chars[i] == '"').then(|| quoted(i)).flatten() {
+            Some(found) => found,
+            None => {
+                let end = (i..chars.len()).find(|&at| ends_cell(chars.get(at))).unwrap_or(chars.len());
+                (chars[i..end].iter().collect(), end)
+            }
+        };
+        row.push(cell);
+        match chars.get(end) {
+            Some(&c) if c == separator => {
+                // A separator at the very end leaves one empty cell.
+                if end + 1 == chars.len() {
+                    row.push(String::new());
+                }
+                end += 1;
+            }
+            Some(&c) => {
+                end += if c == '\r' && chars.get(end + 1) == Some(&'\n') { 2 } else { 1 };
+                rows.push(std::mem::take(&mut row));
+            }
+            None => {}
+        }
+        i = end;
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
+fn number(cell: &str, max: i64) -> Option<i64> {
+    let cell = cell.trim();
+    if cell.is_empty() || !cell.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    cell.parse().ok().filter(|n| *n <= max)
+}
+
+fn read_with(text: &str, separator: char) -> (bool, ParsedList) {
+    let mut rows = split_rows(text, separator);
+    rows.retain(|row| row.iter().any(|cell| !cell.trim().is_empty()));
+    let named = rows.first().and_then(|row| header(row));
+    let columns = named.unwrap_or(DEFAULT_COLUMNS);
+    let mut list = ParsedList::default();
+    for row in rows.iter().skip(usize::from(named.is_some())) {
+        let cell = |at: usize| row.get(at).map_or("", |cell| cell.trim());
+        let optional = |at: Option<usize>| at.map(cell).filter(|c| !c.is_empty()).map(String::from);
+        // A title that had line breaks inside its cell becomes one line.
+        let title = cell(columns.title).split_whitespace().collect::<Vec<_>>().join(" ");
+        match number(cell(columns.no), MAX_REF_NO) {
+            Some(no) if !title.is_empty() => list.rows.push(Reference {
+                no,
+                title,
+                year: columns.year.and_then(|at| number(cell(at), MAX_YEAR)),
+                source_database: optional(columns.source_database),
+                doi: optional(columns.doi),
+            }),
+            _ => list.skipped += 1,
+        }
+    }
+    (named.is_some(), list)
+}
+
+/// Reads the text with each separator and keeps the best reading: one with a header
+/// row first, then the one with the most usable rows.
+pub fn parse(text: &str) -> ParsedList {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    SEPARATORS
+        .iter()
+        .map(|&separator| read_with(text, separator))
+        // `min_by_key` keeps the first of equals, which follows `SEPARATORS`.
+        .min_by_key(|(named, list)| std::cmp::Reverse((*named, list.rows.len())))
+        .map(|(_, list)| list)
+        .unwrap_or_default()
+}
+
+pub fn count(conn: &Connection) -> Result<usize, LibraryError> {
+    Ok(conn.query_row("SELECT count(*) FROM reference", [], |r| r.get::<_, i64>(0))? as usize)
+}
+
+/// Replaces the library's reference list with the rows in `text`. With an existing
+/// list, nothing changes unless `replace` is set (the user's confirmation). The old
+/// list goes and the new one arrives in one transaction.
+pub fn import(conn: &Connection, text: &str, replace: bool) -> Result<ImportResult, LibraryError> {
+    let list = parse(text);
+    if list.rows.is_empty() {
+        return Ok(ImportResult::Empty);
+    }
+    let existing = count(conn)?;
+    if existing > 0 && !replace {
+        return Ok(ImportResult::NeedsConfirmation { existing });
+    }
+    let transaction = conn.unchecked_transaction()?;
+    transaction.execute("DELETE FROM reference", [])?;
+    {
+        let mut insert = transaction.prepare(
+            "INSERT INTO reference (no, title, year, source_database, doi) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for row in &list.rows {
+            insert.execute(params![row.no, row.title, row.year, row.source_database, row.doi])?;
+        }
+    }
+    transaction.commit()?;
+
+    let mut seen = BTreeMap::<i64, usize>::new();
+    for row in &list.rows {
+        *seen.entry(row.no).or_default() += 1;
+    }
+    Ok(ImportResult::Imported {
+        imported: list.rows.len(),
+        skipped: list.skipped,
+        duplicates: seen.into_iter().filter(|(_, times)| *times > 1).map(|(no, _)| no).collect(),
+    })
+}
+
+/// The characters Windows-1252 puts at 0x80 to 0x9F; elsewhere it matches Latin-1.
+const WINDOWS_1252: [char; 32] = [
+    '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}',
+    '\u{90}', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+];
+
+/// Text as Excel saves it: UTF-8, UTF-16 with a byte order mark ("Unicode Text"), or
+/// otherwise the Windows code page of a plain "CSV". `None` for a binary file.
+fn decode(bytes: &[u8]) -> Option<String> {
+    let utf16 = |rest: &[u8], unit: fn([u8; 2]) -> u16| {
+        let (pairs, odd) = rest.as_chunks::<2>();
+        if !odd.is_empty() {
+            return None;
+        }
+        String::from_utf16(&pairs.iter().map(|&pair| unit(pair)).collect::<Vec<_>>()).ok()
+    };
+    let text = match bytes {
+        [0xFF, 0xFE, rest @ ..] => utf16(rest, u16::from_le_bytes)?,
+        [0xFE, 0xFF, rest @ ..] => utf16(rest, u16::from_be_bytes)?,
+        _ => match std::str::from_utf8(bytes) {
+            Ok(text) => text.to_string(),
+            Err(_) => bytes
+                .iter()
+                .map(|&b| match b {
+                    0x80..=0x9F => WINDOWS_1252[usize::from(b - 0x80)],
+                    _ => char::from(b),
+                })
+                .collect(),
+        },
+    };
+    // An .xlsx or .xls file chosen by mistake.
+    if text.contains('\0') {
+        return None;
+    }
+    Some(text.strip_prefix('\u{feff}').map(String::from).unwrap_or(text))
+}
+
+/// The text of a chosen CSV file, or `None` when it cannot be read as one.
+pub fn read_file(path: &Path) -> Option<String> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).ok()?.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() as u64 > MAX_FILE_BYTES {
+        return None;
+    }
+    decode(&bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::library::create_library;
+
+    fn library() -> (tempfile::TempDir, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = create_library(dir.path(), "R").unwrap();
+        (dir, conn)
+    }
+
+    fn row(no: i64, title: &str) -> Reference {
+        Reference { no, title: title.into(), year: None, source_database: None, doi: None }
+    }
+
+    fn full(no: i64, title: &str) -> Reference {
+        Reference {
+            year: Some(2021),
+            source_database: Some("Scopus".into()),
+            doi: Some("10.1000/x".into()),
+            ..row(no, title)
+        }
+    }
+
+    fn titles(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn.prepare("SELECT title FROM reference ORDER BY rowid").unwrap();
+        stmt.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+
+    #[test]
+    fn reads_every_separator_with_and_without_a_header() {
+        for separator in ["\t", ";", ","] {
+            let data = ["46", "Tilapia ponds", "2021", "Scopus", "10.1000/x"].join(separator);
+            let head = ["Reference No", "Title", "Year", "Source Database", "DOI"].join(separator);
+            for text in [data.clone(), format!("{head}\r\n{data}\r\n")] {
+                let list = parse(&text);
+                assert_eq!(list.rows, [full(46, "Tilapia ponds")], "{text:?}");
+                assert_eq!(list.skipped, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn recognizes_indonesian_headers_in_any_order() {
+        let text = "DOI;Judul;Sumber Database;Tahun;No. Referensi\n10.1000/x;Kolam nila;Scopus;2021;46";
+        assert_eq!(parse(text).rows, [full(46, "Kolam nila")]);
+    }
+
+    #[test]
+    fn prefers_the_reference_number_over_a_row_counter_and_ignores_other_columns() {
+        let text = "No\tAuthors\tReference No\tTitle\n1\tKim\t46\tTilapia";
+        assert_eq!(parse(text).rows, [row(46, "Tilapia")]);
+    }
+
+    #[test]
+    fn a_title_may_hold_other_separators() {
+        let title = "Fish, water, feed, and cost: a review";
+        for text in [format!("1;{title}"), format!("1\t{title}"), format!("1,\"{title}\"")] {
+            assert_eq!(parse(&text).rows, [row(1, title)], "{text:?}");
+        }
+    }
+
+    #[test]
+    fn reads_quoted_cells_and_keeps_stray_quotes() {
+        let text = "1;\"A; \"\"B\"\"\r\nsecond line\"\n2;\"Smart\" ponds\n3;\"never closed\n4;Next";
+        assert_eq!(
+            parse(text).rows,
+            [row(1, "A; \"B\" second line"), row(2, "\"Smart\" ponds"), row(3, "\"never closed"), row(4, "Next")]
+        );
+    }
+
+    #[test]
+    fn skips_and_counts_incomplete_rows_but_not_blank_lines() {
+        let text = "Reference No;Title;Year\n1;A;2020\n;No number;2020\n2;;2020\nx3;B\n-4;C\n\n;;\n5;E;n.d.";
+        let list = parse(text);
+        assert_eq!(list.rows, [Reference { year: Some(2020), ..row(1, "A") }, row(5, "E")]);
+        assert_eq!(list.skipped, 4);
+    }
+
+    #[test]
+    fn finds_nothing_in_text_without_usable_rows() {
+        for text in ["", "  \n\n", "just a sentence", "Reference No;Title;Year\n"] {
+            assert!(parse(text).rows.is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn imports_and_reports_duplicate_numbers() {
+        let (_dir, conn) = library();
+        let result = import(&conn, "46;A\n12;B\n46;C\n12;D\n46;E\n7;F\n;G", false).unwrap();
+        assert_eq!(result, ImportResult::Imported { imported: 6, skipped: 1, duplicates: vec![12, 46] });
+        assert_eq!(count(&conn).unwrap(), 6);
+    }
+
+    #[test]
+    fn replaces_an_old_list_only_after_confirmation_and_keeps_papers() {
+        let (_dir, conn) = library();
+        import(&conn, "46;Old", false).unwrap();
+        conn.execute_batch(
+            "INSERT INTO paper (reference_id, ref_no, title, decision, assessment_note)
+             SELECT id, 46, 'Old', 'include', 'note' FROM reference;",
+        )
+        .unwrap();
+
+        let asked = import(&conn, "1;New", false).unwrap();
+        assert_eq!(asked, ImportResult::NeedsConfirmation { existing: 1 });
+        assert_eq!(titles(&conn), ["Old"]);
+
+        import(&conn, "1;New\n2;Newer", true).unwrap();
+        assert_eq!(titles(&conn), ["New", "Newer"]);
+        let paper: (Option<String>, i64, String, String, String) = conn
+            .query_row("SELECT reference_id, ref_no, title, decision, assessment_note FROM paper", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .unwrap();
+        assert_eq!(paper, (None, 46, "Old".into(), "include".into(), "note".into()));
+    }
+
+    #[test]
+    fn an_import_without_rows_never_removes_the_old_list() {
+        let (_dir, conn) = library();
+        import(&conn, "46;Old", false).unwrap();
+        assert_eq!(import(&conn, "nothing here", true).unwrap(), ImportResult::Empty);
+        assert_eq!(titles(&conn), ["Old"]);
+    }
+
+    #[test]
+    fn a_failed_replacement_keeps_the_old_list() {
+        let (_dir, conn) = library();
+        import(&conn, "46;Old", false).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_second BEFORE INSERT ON reference WHEN new.no = 2
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+        )
+        .unwrap();
+        assert!(import(&conn, "1;New\n2;Fails", true).is_err());
+        assert_eq!(titles(&conn), ["Old"]);
+    }
+
+    #[test]
+    fn decodes_the_encodings_excel_writes_and_refuses_binary_files() {
+        let text = "1;Café “ponds”";
+        assert_eq!(decode(format!("\u{feff}{text}").as_bytes()).as_deref(), Some(text));
+        for bytes_of in [u16::to_le_bytes, u16::to_be_bytes] {
+            let utf16: Vec<u8> = std::iter::once(0xFEFF).chain(text.encode_utf16()).flat_map(bytes_of).collect();
+            assert_eq!(decode(&utf16).as_deref(), Some(text));
+        }
+        assert_eq!(decode(b"1;Caf\xE9 \x93ponds\x94").as_deref(), Some(text));
+        assert_eq!(decode(b"PK\x03\x04\x00\x00"), None);
+    }
+
+    #[test]
+    fn reads_a_file_and_refuses_a_missing_or_huge_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("list.csv");
+        assert_eq!(read_file(&path), None);
+        std::fs::write(&path, "1;A").unwrap();
+        assert_eq!(read_file(&path).as_deref(), Some("1;A"));
+        std::fs::write(&path, vec![b'a'; MAX_FILE_BYTES as usize + 1]).unwrap();
+        assert_eq!(read_file(&path), None);
+    }
+
+    #[test]
+    fn the_result_has_the_shape_the_ui_expects() {
+        let asked = serde_json::to_value(ImportResult::NeedsConfirmation { existing: 3 }).unwrap();
+        assert_eq!(asked, serde_json::json!({ "status": "needs_confirmation", "existing": 3 }));
+    }
+}
