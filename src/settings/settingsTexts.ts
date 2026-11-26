@@ -14,14 +14,18 @@ export const SECTIONS: { value: SettingsSection; label: string }[] = [
 export const SAVED = "Saved";
 export const REQUIRED = "This field is required.";
 
-export const DELETE_TITLES: Record<CriteriaKind, string> = {
+export const DELETE_TITLES: Record<SettingsSection, string> = {
+  questions: "Delete research question?",
   inclusion: "Delete inclusion criterion?",
   exclusion: "Delete exclusion reason?",
   tag: "Delete tag?",
 };
 
-/** `name` is the code of a criterion, or the name of a tag. */
-export function deleteMessage(kind: CriteriaKind, name: string, uses: number): string {
+/** The number of a research question, by its place in the list. */
+export const questionCode = (index: number) => `RQ${index + 1}`;
+
+/** `name` is the code of a criterion or question, or the name of a tag. */
+export function deleteMessage(kind: SettingsSection, name: string, uses: number): string {
   if (uses === 0) return `${name} will be deleted. This can't be undone.`;
   if (kind === "tag") {
     return uses === 1

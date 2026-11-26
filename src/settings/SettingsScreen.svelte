@@ -4,12 +4,10 @@
   T-41, "Load a template" with T-36. Text approved in T-35.
 -->
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
+  import { onMount } from "svelte";
   import Button from "../lib/components/Button.svelte";
-  import Icon from "../lib/components/Icon.svelte";
   import InlineBanner from "../lib/components/InlineBanner.svelte";
-  import TextArea from "../lib/components/TextArea.svelte";
-  import { GENERIC_ERROR, SAVE_ERROR } from "../lib/libraryTexts";
+  import { SAVE_ERROR } from "../lib/libraryTexts";
   import CriteriaList from "./CriteriaList.svelte";
   import type { SettingsStore } from "./settingsStore.svelte";
   import { SECTIONS, type SettingsSection } from "./settingsTexts";
@@ -26,11 +24,6 @@
   let { store, section = $bindable(), readOnly, notice, onclose }: Props = $props();
 
   const title = $derived(SECTIONS.find((each) => each.value === section)?.label);
-
-  // Untracked: a failed load must not start itself again.
-  $effect(() => {
-    if (section === "questions") untrack(() => store.loadQuestions());
-  });
 
   let nav: HTMLElement;
   onMount(() => nav.querySelector<HTMLElement>('[aria-current="page"]')?.focus());
@@ -74,27 +67,9 @@
           </InlineBanner>
         {/if}
 
-        {#if section === "questions"}
-          {#if store.questions.status === "error"}
-            <p class="problem" role="alert"><Icon name="error" />{GENERIC_ERROR}</p>
-          {:else if store.questions.status === "ready"}
-            <TextArea
-              label="Research questions"
-              hint="One question per line."
-              value={store.questions.text}
-              rows={6}
-              autoGrow
-              maxRows={20}
-              readonly={readOnly}
-              oninput={(event) => store.editQuestions(event.currentTarget.value)}
-              onblur={() => store.flush()}
-            />
-          {/if}
-        {:else}
-          {#key section}
-            <CriteriaList {store} kind={section} {readOnly} />
-          {/key}
-        {/if}
+        {#key section}
+          <CriteriaList {store} kind={section} {readOnly} />
+        {/key}
       </div>
     </main>
   </div>
@@ -201,11 +176,4 @@
     font: var(--type-display);
   }
 
-  .problem {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    margin: 0;
-    color: var(--status-error);
-  }
 </style>

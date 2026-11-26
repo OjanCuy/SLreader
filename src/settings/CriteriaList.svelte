@@ -1,12 +1,12 @@
 <!--
-  CriteriaList / CriterionRow (Brief S-04): one of the three lists of the library, with
-  a drag handle, code and description (a tag has a name only), delete, and "Add".
+  CriteriaList / CriterionRow (Brief S-04): one of the lists of the library, with a
+  drag handle, code and description (a tag has a name only; a research question has a
+  number that follows its place), delete, and "Add".
   Every delete of a saved row is confirmed (O-10). The handle also moves its row with
   the arrow keys.
 -->
 <script lang="ts">
   import { tick, untrack } from "svelte";
-  import type { CriteriaKind } from "../lib/api";
   import Button from "../lib/components/Button.svelte";
   import Dialog from "../lib/components/Dialog.svelte";
   import Icon from "../lib/components/Icon.svelte";
@@ -16,18 +16,31 @@
   import { showToast } from "../lib/components/toasts.svelte";
   import { GENERIC_ERROR } from "../lib/libraryTexts";
   import type { Row, SettingsStore } from "./settingsStore.svelte";
-  import { DELETE_TITLES, deleteMessage, repeatedCodes, REQUIRED } from "./settingsTexts";
+  import {
+    DELETE_TITLES,
+    deleteMessage,
+    questionCode,
+    repeatedCodes,
+    REQUIRED,
+    type SettingsSection,
+  } from "./settingsTexts";
 
   interface Props {
     store: SettingsStore;
-    kind: CriteriaKind;
+    kind: SettingsSection;
     readOnly: boolean;
   }
 
   let { store, kind, readOnly }: Props = $props();
 
   const list = $derived(store.lists[kind]);
-  const repeated = $derived(kind === "tag" ? [] : repeatedCodes(list.rows.map((row) => row.code)));
+  /** Criteria have a code the user can change. */
+  const coded = $derived(kind === "inclusion" || kind === "exclusion");
+  const repeated = $derived(coded ? repeatedCodes(list.rows.map((row) => row.code)) : []);
+  const field = $derived(kind === "tag" ? "Tag name" : kind === "questions" ? "Question" : "Description");
+  const empty = $derived(
+    kind === "tag" ? "No tags yet." : kind === "questions" ? "No research questions yet." : "No criteria yet.",
+  );
 
   // Untracked: a failed load must not start itself again.
   $effect(() => {
@@ -60,7 +73,10 @@
     try {
       const uses = await store.askToRemove(kind, row);
       if (uses === null) return;
-      const name = (kind === "tag" ? row.stored?.label : row.stored?.code) ?? "";
+      const name =
+        kind === "questions"
+          ? questionCode(list.rows.indexOf(row))
+          : ((kind === "tag" ? row.stored?.label : row.stored?.code) ?? "");
       confirming = { row, message: deleteMessage(kind, name, uses) };
     } catch {
       showToast(GENERIC_ERROR, "error");
@@ -146,7 +162,7 @@
   {/each}
 
   {#if list.rows.length === 0}
-    <p class="note">{kind === "tag" ? "No tags yet." : "No criteria yet."}</p>
+    <p class="note">{empty}</p>
   {:else}
     <ul bind:this={items}>
       {#each list.rows as row, index (row.key)}
@@ -164,7 +180,9 @@
               <Icon name="drag" />
             </button>
           {/if}
-          {#if kind !== "tag"}
+          {#if kind === "questions"}
+            <span class="number">{questionCode(index)}</span>
+          {:else if coded}
             <div class="code">
               <TextField
                 label="Code"
@@ -178,7 +196,7 @@
           {/if}
           <div class="label">
             <TextField
-              label={kind === "tag" ? "Tag name" : "Description"}
+              label={field}
               value={row.label}
               error={missing(row, "label")}
               readonly={readOnly}
@@ -248,9 +266,19 @@
 
   /* Level with the inputs, below their labels. */
   .handle,
+  .number,
   .remove {
     align-self: flex-start;
     margin-top: var(--space-6);
+  }
+
+  .number {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    min-width: 40px;
+    min-height: var(--target-dense);
+    font-variant-numeric: var(--type-numeric);
   }
 
   .handle {

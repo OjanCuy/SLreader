@@ -43,7 +43,7 @@ afterEach(() => {
 
 const messages = () => toasts.map((toast) => toast.message);
 
-async function show(kind: api.CriteriaKind = "exclusion", readOnly = false) {
+async function show(kind: api.CriteriaKind | "questions" = "exclusion", readOnly = false) {
   const store = createSettingsStore(() => 7);
   render(CriteriaList, { store, kind, readOnly });
   await vi.waitFor(() => expect(store.lists[kind].status).toBe("ready"));
@@ -241,20 +241,77 @@ describe("the lists of a library (FR-08.1, FR-08.2, FR-08.4)", () => {
   });
 });
 
+describe("the research questions (FR-08.4)", () => {
+  const question = (index: number) => field(index, "Question");
+  const savedTexts = () => mocked.setResearchQuestions.mock.calls.map(([, text]) => text);
+
+  beforeEach(() => mocked.getResearchQuestions.mockResolvedValue("RQ one?\n\nRQ two?\n"));
+
+  it("shows one numbered row per line, and writes nothing just by showing them", async () => {
+    await show("questions");
+    expect(rows().map((item) => item.querySelector(".number")?.textContent)).toEqual(["RQ1", "RQ2"]);
+    expect([question(0).value, question(1).value]).toEqual(["RQ one?", "RQ two?"]);
+    expect(row(0).queryByRole("textbox", { name: "Code" })).toBeNull();
+    expect(mocked.setResearchQuestions).not.toHaveBeenCalled();
+  });
+
+  it("shows an empty list with Add", async () => {
+    mocked.getResearchQuestions.mockResolvedValue("");
+    await show("questions");
+    expect(screen.getByText("No research questions yet.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add" })).toBeTruthy();
+  });
+
+  it("saves all questions as one text, also a new one", async () => {
+    await show("questions");
+    await fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(document.activeElement).toBe(question(2));
+    await type(question(2), " RQ three? ");
+    await vi.waitFor(() => expect(savedTexts()).toEqual(["RQ one?\nRQ two?\nRQ three?"]));
+    expect(messages()).toEqual(["Saved"]);
+  });
+
+  it("keeps the old question when its field is emptied", async () => {
+    await show("questions");
+    await type(question(0), "");
+    expect(row(0).getByText("This field is required.")).toBeTruthy();
+    await type(question(1), "Changed?");
+    await vi.waitFor(() => expect(savedTexts()).toEqual(["RQ one?\nChanged?"]));
+  });
+
+  it("saves a new order", async () => {
+    await show("questions");
+    await fireEvent.keyDown(row(1).getByRole("button", { name: "Reorder" }), { key: "ArrowUp" });
+    await vi.waitFor(() => expect(savedTexts()).toEqual(["RQ two?\nRQ one?"]));
+  });
+
+  it("deletes a question only after the confirmation", async () => {
+    await show("questions");
+    await fireEvent.click(row(1).getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete research question?" });
+    expect(dialog.textContent).toContain("RQ2 will be deleted. This can't be undone.");
+    expect(mocked.setResearchQuestions).not.toHaveBeenCalled();
+    await fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+    await vi.waitFor(() => expect(rows()).toHaveLength(1));
+    expect(savedTexts()).toEqual(["RQ one?"]);
+  });
+
+  it("keeps the question when deleting fails", async () => {
+    mocked.setResearchQuestions.mockRejectedValue(new Error("disk full"));
+    await show("questions");
+    await fireEvent.click(row(0).getByRole("button", { name: "Delete" }));
+    await fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete" }));
+    await vi.waitFor(() => expect(messages()).toEqual(["Something went wrong. Try again."]));
+    expect(rows()).toHaveLength(2);
+  });
+});
+
 describe("the Settings screen", () => {
-  it("edits the research questions and switches sections", async () => {
+  it("starts on the research questions and switches sections", async () => {
     const store = createSettingsStore(() => 7);
     const onclose = vi.fn();
     render(SettingsScreen, { store, section: "questions", readOnly: false, onclose });
-    const questions = (await screen.findByRole("textbox", {
-      name: "Research questions",
-    })) as HTMLTextAreaElement;
-    expect(questions.value).toBe("RQ1?");
-    expect(screen.getByText("One question per line.")).toBeTruthy();
-
-    await fireEvent.input(questions, { target: { value: "RQ1?\nRQ2?" } });
-    await fireEvent.blur(questions);
-    await vi.waitFor(() => expect(mocked.setResearchQuestions).toHaveBeenCalledWith(7, "RQ1?\nRQ2?"));
+    expect(((await screen.findByRole("textbox", { name: "Question" })) as HTMLInputElement).value).toBe("RQ1?");
 
     await fireEvent.click(screen.getByRole("button", { name: "Extraction tags" }));
     expect(await screen.findByText("Order sets export columns")).toBeTruthy();

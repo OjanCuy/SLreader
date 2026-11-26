@@ -2,6 +2,9 @@
 // One store per opened library, so text that could not be saved is still there when
 // Settings is opened again.
 //
+// Research questions are rows on screen too, but are saved together as one text with a
+// question per line.
+//
 // A change shows on screen at once and is saved shortly after typing stops. A change
 // that cannot be saved stays on screen with "Try again" (PRD Section 8). Saves run one
 // after another, so they never overtake each other.
@@ -19,7 +22,7 @@ import {
 } from "../lib/api";
 import { dismissToast, showToast } from "../lib/components/toasts.svelte";
 import { GENERIC_ERROR, SAVE_ERROR } from "../lib/libraryTexts";
-import { nextCode, SAVED } from "./settingsTexts";
+import { nextCode, SAVED, type SettingsSection } from "./settingsTexts";
 
 /** Typed text is saved this long after the last key press, and when its field is left. */
 export const SAVE_DELAY_MS = 600;
@@ -45,16 +48,14 @@ export interface CriteriaList {
 export type SettingsStore = ReturnType<typeof createSettingsStore>;
 
 export function createSettingsStore(session: () => number) {
-  const questions = $state({
-    status: "idle" as CriteriaList["status"],
-    text: "",
-    stored: "",
-  });
-  const lists = $state<Record<CriteriaKind, CriteriaList>>({
+  const lists = $state<Record<SettingsSection, CriteriaList>>({
+    questions: { status: "idle", rows: [] },
     inclusion: { status: "idle", rows: [] },
     exclusion: { status: "idle", rows: [] },
     tag: { status: "idle", rows: [] },
   });
+  /** The research questions as saved. */
+  let storedQuestions = "";
   /** A change could not be saved. */
   let failed = $state(false);
 
@@ -67,27 +68,23 @@ export function createSettingsStore(session: () => number) {
   /** Saves waiting for the typing to stop. */
   const waiting = new Map<string, { timer: ReturnType<typeof setTimeout>; run: () => void }>();
 
-  async function loadQuestions(): Promise<void> {
-    if (questions.status === "loading" || questions.status === "ready") return;
-    questions.status = "loading";
-    try {
-      const text = (await getResearchQuestions(session())) ?? "";
-      questions.text = text;
-      questions.stored = text;
-      questions.status = "ready";
-    } catch (failure) {
-      console.error("The research questions could not be read", failure);
-      questions.status = "error";
-    }
+  async function read(kind: SettingsSection): Promise<{ id: string; code: string; label: string }[]> {
+    if (kind !== "questions") return (await listCriteria(session(), kind)) ?? [];
+    const lines = ((await getResearchQuestions(session())) ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+    // Without blank lines, so that nothing is written until the user changes something.
+    storedQuestions = lines.join("\n");
+    return lines.map((label, at) => ({ id: `line-${at}`, code: "", label }));
   }
 
-  async function load(kind: CriteriaKind): Promise<void> {
+  async function load(kind: SettingsSection): Promise<void> {
     const list = lists[kind];
     if (list.status === "loading" || list.status === "ready") return;
     list.status = "loading";
     try {
-      const items = (await listCriteria(session(), kind)) ?? [];
-      list.rows = items.map(({ id, code, label }) => ({
+      list.rows = (await read(kind)).map(({ id, code, label }) => ({
         key: ++keys,
         id,
         code,
@@ -97,9 +94,29 @@ export function createSettingsStore(session: () => number) {
       }));
       list.status = "ready";
     } catch (failure) {
-      console.error("The criteria could not be read", failure);
+      console.error("The list could not be read", failure);
       list.status = "error";
     }
+  }
+
+  /**
+   * Saves the research questions as they are on screen, leaving out `without`. A new
+   * row without text is left out, and an emptied one keeps its old question.
+   */
+  async function writeQuestions(without?: Row): Promise<boolean> {
+    const rows = lists.questions.rows.filter((row) => row !== without);
+    const values = rows.map((row) => row.label.trim() || (row.stored?.label ?? ""));
+    const text = values.filter((value) => value !== "").join("\n");
+    if (text === storedQuestions) return false;
+    await setResearchQuestions(session(), text);
+    storedQuestions = text;
+    rows.forEach((row, at) => {
+      const label = values[at]!;
+      if (label === "") return;
+      row.id ??= `new-${row.key}`;
+      row.stored = { code: "", label };
+    });
+    return true;
   }
 
   function showSaved() {
@@ -139,24 +156,12 @@ export function createSettingsStore(session: () => number) {
     return queue;
   }
 
-  function editQuestions(text: string): void {
-    questions.text = text;
-    saveSoon("questions", () =>
-      enqueue("questions", async () => {
-        const { text, stored } = questions;
-        if (text === stored) return false;
-        await setResearchQuestions(session(), text);
-        questions.stored = text;
-        return true;
-      }),
-    );
-  }
-
   /** Saves a row once its required fields are filled; an emptied field keeps the old value. */
-  function saveRow(kind: CriteriaKind, row: Row): void {
+  function saveRow(kind: SettingsSection, row: Row): void {
     enqueue(`row-${row.key}`, async () => {
       const list = lists[kind];
       if (!list.rows.includes(row)) return false;
+      if (kind === "questions") return writeQuestions();
       const label = row.label.trim();
       const code = kind === "tag" ? "" : row.code.trim();
       if (label === "" || (kind !== "tag" && code === "")) return false;
@@ -174,7 +179,7 @@ export function createSettingsStore(session: () => number) {
     });
   }
 
-  function edit(kind: CriteriaKind, row: Row, field: "code" | "label", value: string): void {
+  function edit(kind: SettingsSection, row: Row, field: "code" | "label", value: string): void {
     row[field] = value;
     saveSoon(`row-${row.key}`, () => saveRow(kind, row));
   }
@@ -185,12 +190,12 @@ export function createSettingsStore(session: () => number) {
     waiting.get(`row-${row.key}`)?.run();
   }
 
-  function add(kind: CriteriaKind): Row {
+  function add(kind: SettingsSection): Row {
     const { rows } = lists[kind];
     rows.push({
       key: ++keys,
       id: null,
-      code: kind === "tag" ? "" : nextCode(kind, rows.map((row) => row.code)),
+      code: kind === "tag" || kind === "questions" ? "" : nextCode(kind, rows.map((row) => row.code)),
       label: "",
       stored: null,
       touched: { code: false, label: false },
@@ -200,7 +205,7 @@ export function createSettingsStore(session: () => number) {
   }
 
   /** Moves a row to another position on screen. `saveOrder` saves it. */
-  function move(kind: CriteriaKind, row: Row, to: number): boolean {
+  function move(kind: SettingsSection, row: Row, to: number): boolean {
     const { rows } = lists[kind];
     const from = rows.indexOf(row);
     const target = Math.max(0, Math.min(rows.length - 1, to));
@@ -210,15 +215,16 @@ export function createSettingsStore(session: () => number) {
     return true;
   }
 
-  function saveOrder(kind: CriteriaKind): void {
+  function saveOrder(kind: SettingsSection): void {
     enqueue(`order-${kind}`, async () => {
+      if (kind === "questions") return writeQuestions();
       const ids = lists[kind].rows.flatMap((row) => (row.id === null ? [] : [row.id]));
       await reorderCriteria(session(), kind, ids);
       return true;
     });
   }
 
-  function drop(kind: CriteriaKind, row: Row) {
+  function drop(kind: SettingsSection, row: Row) {
     clearTimeout(waiting.get(`row-${row.key}`)?.timer);
     waiting.delete(`row-${row.key}`);
     failures.delete(`row-${row.key}`);
@@ -233,22 +239,23 @@ export function createSettingsStore(session: () => number) {
    * resolves to null. Otherwise resolves to how many papers or highlights use it, for
    * the confirmation; nothing is deleted yet. Rejects when that cannot be read.
    */
-  async function askToRemove(kind: CriteriaKind, row: Row): Promise<number | null> {
+  async function askToRemove(kind: SettingsSection, row: Row): Promise<number | null> {
     waiting.get(`row-${row.key}`)?.run();
     await queue;
     if (row.id === null) {
       drop(kind, row);
       return null;
     }
-    return countCriterionUses(session(), kind, row.id);
+    return kind === "questions" ? 0 : countCriterionUses(session(), kind, row.id);
   }
 
   /** Deletes a saved row. Only call it after the user has confirmed. */
-  async function remove(kind: CriteriaKind, row: Row): Promise<void> {
+  async function remove(kind: SettingsSection, row: Row): Promise<void> {
     const done = queue.then(async () => {
       if (row.id === null) return;
       try {
-        await deleteCriterion(session(), kind, row.id);
+        if (kind === "questions") await writeQuestions(row);
+        else await deleteCriterion(session(), kind, row.id);
         drop(kind, row);
         showSaved();
       } catch {
@@ -273,14 +280,11 @@ export function createSettingsStore(session: () => number) {
   }
 
   return {
-    questions,
     lists,
     get failed() {
       return failed;
     },
-    loadQuestions,
     load,
-    editQuestions,
     edit,
     leave,
     add,
