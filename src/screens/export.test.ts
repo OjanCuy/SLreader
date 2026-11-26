@@ -29,8 +29,8 @@ beforeEach(() => {
     metadata: { refNo: null, title: "", year: null, sourceDatabase: "", doi: "" },
     sameRefNo: [],
   });
-  mocked.exportDecisions.mockResolvedValue("decisions.csv");
-  mocked.exportExtraction.mockResolvedValue("extraction.csv");
+  mocked.exportDecisions.mockResolvedValue({ status: "saved", fileName: "decisions.csv" });
+  mocked.exportExtraction.mockResolvedValue({ status: "saved", fileName: "extraction.csv" });
   mocked.listExtractionTags.mockResolvedValue([{ id: "f", label: "FCR" }]);
   mocked.exportMarkdown.mockResolvedValue({ folderName: "highlights", fileCount: 12 });
 });
@@ -75,7 +75,7 @@ describe("exporting the decisions (FR-06.1)", () => {
     show();
     await fireEvent.click(await exportItem());
     await vi.waitFor(() => expect(messages()).toEqual(["Exported decisions.csv"]));
-    expect(mocked.exportDecisions).toHaveBeenCalledExactlyOnceWith(7);
+    expect(mocked.exportDecisions).toHaveBeenCalledExactlyOnceWith(7, undefined);
   });
 
   it("is also possible for a read-only library", async () => {
@@ -139,7 +139,7 @@ describe("exporting the extraction (FR-06.2)", () => {
     show();
     await fireEvent.click(await extractionItem());
     await vi.waitFor(() => expect(messages()).toEqual(["Exported extraction.csv"]));
-    expect(mocked.exportExtraction).toHaveBeenCalledExactlyOnceWith(7);
+    expect(mocked.exportExtraction).toHaveBeenCalledExactlyOnceWith(7, undefined);
     expect(mocked.exportDecisions).not.toHaveBeenCalled();
   });
 
@@ -247,5 +247,71 @@ describe("exporting the highlights and notes (FR-06.3)", () => {
       expect(messages()).toEqual(["Couldn't save: the disk is full or the folder is read-only."]),
     );
     expect(mocked.exportMarkdown).not.toHaveBeenCalled();
+  });
+});
+
+describe("a file open in another app (PRD Section 8)", () => {
+  const MESSAGE = "decisions.csv is open in another app. Close it or save with a new name.";
+  const inUse: api.CsvExport = {
+    status: "in_use",
+    fileName: "decisions.csv",
+    suggestedName: "decisions (2).csv",
+  };
+  const saveAs = () => toasts.find((toast) => toast.message === MESSAGE)!.actions![0]!;
+
+  async function exportLocked() {
+    mocked.exportDecisions.mockResolvedValueOnce(inUse);
+    show();
+    await fireEvent.click(await exportItem());
+    await vi.waitFor(() => expect(messages()).toEqual([MESSAGE]));
+  }
+
+  it("says so and offers Save as", async () => {
+    await exportLocked();
+    expect(toasts[0]!.tone).toBe("error");
+    expect(saveAs().label).toBe("Save as…");
+  });
+
+  it("opens the dialog again with the new name", async () => {
+    await exportLocked();
+    mocked.exportDecisions.mockResolvedValue({ status: "saved", fileName: "decisions (2).csv" });
+    const action = saveAs();
+    // As the toast does: close, then run.
+    dismissToast(toasts[0]!.id);
+    action.onselect();
+    await vi.waitFor(() => expect(messages()).toEqual(["Exported decisions (2).csv"]));
+    expect(mocked.exportDecisions).toHaveBeenLastCalledWith(7, "decisions (2).csv");
+  });
+
+  it("keeps one question when the file is still open", async () => {
+    await exportLocked();
+    mocked.exportDecisions.mockResolvedValueOnce(inUse);
+    await fireEvent.click(await exportItem());
+    await vi.waitFor(() => expect(mocked.exportDecisions).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(messages()).toEqual([MESSAGE]));
+  });
+
+  it("drops the question when the workspace closes", async () => {
+    await exportLocked();
+    cleanup();
+    expect(messages()).toEqual([]);
+  });
+
+  it("offers it for the extraction too", async () => {
+    mocked.exportExtraction.mockResolvedValueOnce({
+      status: "in_use",
+      fileName: "extraction.csv",
+      suggestedName: "extraction (2).csv",
+    });
+    show();
+    await fireEvent.click(await extractionItem());
+    await vi.waitFor(() => expect(toasts[0]?.actions).toHaveLength(1));
+    const action = toasts[0]!.actions![0]!;
+    dismissToast(toasts[0]!.id);
+    action.onselect();
+    await vi.waitFor(() =>
+      expect(mocked.exportExtraction).toHaveBeenLastCalledWith(7, "extraction (2).csv"),
+    );
+    expect(mocked.exportDecisions).not.toHaveBeenCalled();
   });
 });

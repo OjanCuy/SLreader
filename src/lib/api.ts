@@ -486,17 +486,22 @@ export function updateNoteLinks(session: number, from: number, to: number): Prom
 
 // ---- Exports (FR-06.1 to FR-06.3). ----
 
+export type CsvExport =
+  | { status: "saved"; fileName: string }
+  /** Another app holds the file, which was not changed. */
+  | { status: "in_use"; fileName: string; suggestedName: string };
+
 /**
- * Asks where to save and writes the decisions as CSV. Resolves to the file name, or
- * null when the user cancels.
+ * Asks where to save and writes the decisions as CSV. Null when the user cancels.
+ * `suggestedName` replaces the usual file name in the dialog ("Save as…").
  */
-export function exportDecisions(session: number): Promise<string | null> {
-  return invoke("export_decisions", { session });
+export function exportDecisions(session: number, suggestedName?: string): Promise<CsvExport | null> {
+  return invoke("export_decisions", { session, suggestedName });
 }
 
 /** The same for the extraction: one column per tag, one row per paper. */
-export function exportExtraction(session: number): Promise<string | null> {
-  return invoke("export_extraction", { session });
+export function exportExtraction(session: number, suggestedName?: string): Promise<CsvExport | null> {
+  return invoke("export_extraction", { session, suggestedName });
 }
 
 export interface MarkdownExport {

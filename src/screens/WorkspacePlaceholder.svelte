@@ -51,9 +51,11 @@
     exportedFilesMessage,
     exportedMessage,
     EXTRACTION_ITEM,
+    fileInUseMessage,
     MARKDOWN_ITEM,
     NO_TAGS_TO_EXPORT,
     NOTHING_TO_EXPORT,
+    SAVE_AS,
   } from "../lib/exportTexts";
   import { createHighlightStore } from "../reader/highlightStore.svelte";
   import HighlightsPanel from "../reader/HighlightsPanel.svelte";
@@ -211,22 +213,39 @@
   const noPapers = $derived(papers?.length ? undefined : NOTHING_TO_EXPORT);
   const noExtraction = $derived(noPapers ?? (hasTags === false ? NO_TAGS_TO_EXPORT : undefined));
 
-  /** The success message of an export; null when the user cancelled it. */
-  type Export = () => Promise<string | null>;
+  /** Writes one export and says how it went; nothing when the user cancels. */
+  type Export = () => Promise<void>;
 
-  const csvExport = (write: (session: number) => Promise<string | null>): Export => async () => {
-    const name = await write(session);
-    return name ? exportedMessage(name) : null;
-  };
+  /** The "is open in another app" toast on screen, if any. */
+  let inUseToast: number | null = null;
+
+  function csvExport(write: typeof exportDecisions, suggestedName?: string): Export {
+    return async () => {
+      const done = await write(session, suggestedName);
+      if (done?.status === "saved") showToast(exportedMessage(done.fileName), "success");
+      if (done?.status !== "in_use") return;
+      const saveAs = {
+        label: SAVE_AS,
+        onselect: () =>
+          runExport(csvExport(write, done.suggestedName), write === exportExtraction),
+      };
+      inUseToast = showToast(fileInUseMessage(done.fileName), "error", [saveAs]);
+      // Belongs to this library: dismissed with its other questions.
+      questions.push(inUseToast);
+    };
+  }
 
   const markdownExport: Export = async () => {
     const done = await exportMarkdown(session);
-    return done ? exportedFilesMessage(done.fileCount, done.folderName) : null;
+    if (done) showToast(exportedFilesMessage(done.fileCount, done.folderName), "success");
   };
 
   async function runExport(write: Export, withHighlights: boolean) {
     if (exporting) return;
     exporting = true;
+    // A new export replaces the question about the last one.
+    if (inUseToast !== null) dismissToast(inUseToast);
+    inUseToast = null;
     try {
       // The file holds what is on screen, so everything typed is saved first.
       await Promise.all([decisions.settle(), highlights.settle(), settings.flush()]);
@@ -235,8 +254,7 @@
         showToast(SAVE_ERROR, "error");
         return;
       }
-      const done = await write();
-      if (done) showToast(done, "success");
+      await write();
     } catch (failure) {
       console.error("The export failed", failure);
       showToast(SAVE_ERROR, "error");

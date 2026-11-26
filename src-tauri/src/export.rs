@@ -175,8 +175,55 @@ pub fn extraction_csv(conn: &Connection, delimiter: CsvDelimiter) -> Result<Stri
     Ok(csv)
 }
 
-/// Writes an exported file. On failure an existing file at `path` is untouched.
-pub fn write_file(path: &Path, contents: &str) -> Result<(), LibraryError> {
+/// How writing an exported file ended, if not with an error.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Written {
+    Saved,
+    /// Another app holds the file, e.g. Excel. It was not changed (PRD Section 8).
+    InUse,
+}
+
+/// Whether another app has the file open in a way that keeps it from being replaced.
+#[cfg(windows)]
+fn held_elsewhere(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    const DELETE: u32 = 0x0001_0000;
+    const SHARE_ALL: u32 = 7;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    // Asks for the right to replace the file, without touching it.
+    fs::OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(SHARE_ALL)
+        .open(path)
+        .is_err_and(|error| error.raw_os_error() == Some(ERROR_SHARING_VIOLATION))
+}
+
+#[cfg(not(windows))]
+fn held_elsewhere(_path: &Path) -> bool {
+    false
+}
+
+/// A name like `path`'s that no file in its folder has: "decisions (2).csv", then
+/// "decisions (3).csv", and so on.
+pub fn free_name(path: &Path) -> String {
+    let part = |part: Option<&std::ffi::OsStr>| part.unwrap_or_default().to_string_lossy().into_owned();
+    let stem = part(path.file_stem());
+    let extension = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    // A number the name already has is counted on, not repeated.
+    let base = stem
+        .strip_suffix(')')
+        .and_then(|rest| rest.rsplit_once(" ("))
+        .filter(|(_, number)| number.parse::<u32>().is_ok())
+        .map_or(stem.as_str(), |(base, _)| base);
+    (2..1000)
+        .map(|number| format!("{base} ({number}){extension}"))
+        .find(|name| *name != part(path.file_name()) && !path.with_file_name(name).exists())
+        // The save dialog still asks before it replaces a file.
+        .unwrap_or_else(|| format!("{base} (new){extension}"))
+}
+
+/// Writes an exported file. Unless it is saved, an existing file at `path` is untouched.
+pub fn write_file(path: &Path, contents: &str) -> Result<Written, LibraryError> {
     let failed = |error: std::io::Error| LibraryError::new(ErrorCode::Other, error.to_string());
     let name = path
         .file_name()
@@ -189,11 +236,21 @@ pub fn write_file(path: &Path, contents: &str) -> Result<(), LibraryError> {
     let mut file = fs::File::create_new(&temporary).map_err(failed)?;
     let written = file.write_all(contents.as_bytes()).and_then(|()| file.sync_all());
     drop(file);
-    written.and_then(|()| fs::rename(&temporary, path)).map_err(|error| {
-        // Only the file made here.
+    // Only the file made here is removed.
+    let discard = || {
         let _ = fs::remove_file(&temporary);
-        failed(error)
-    })
+    };
+    if let Err(error) = written {
+        discard();
+        return Err(failed(error));
+    }
+    match fs::rename(&temporary, path) {
+        Ok(()) => Ok(Written::Saved),
+        Err(error) => {
+            discard();
+            if held_elsewhere(path) { Ok(Written::InUse) } else { Err(failed(error)) }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -420,16 +477,48 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn a_file_open_elsewhere_is_not_touched() {
+    fn a_file_open_elsewhere_is_reported_and_not_touched() {
         use std::os::windows::fs::OpenOptionsExt;
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("decisions.csv");
         fs::write(&path, "old").unwrap();
-        // As Excel does: others may read the file, nobody may replace it.
-        let held = fs::OpenOptions::new().read(true).share_mode(1).open(&path).unwrap();
+        // Nothing shared, reading shared (as Excel does), reading and writing shared.
+        for share in [0, 1, 3] {
+            let held = fs::OpenOptions::new().read(true).share_mode(share).open(&path).unwrap();
+            assert_eq!(write_file(&path, "new").unwrap(), Written::InUse, "share mode {share}");
+            drop(held);
+            assert_eq!(fs::read_to_string(&path).unwrap(), "old");
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_read_only_file_is_an_error_not_a_file_in_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("decisions.csv");
+        fs::write(&path, "old").unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions.clone()).unwrap();
         assert!(write_file(&path, "new").is_err());
-        drop(held);
         assert_eq!(fs::read_to_string(&path).unwrap(), "old");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        // So that the folder can be removed.
+        #[allow(clippy::permissions_set_readonly_false)]
+        permissions.set_readonly(false);
+        fs::set_permissions(&path, permissions).unwrap();
+    }
+
+    #[test]
+    fn suggests_a_name_that_no_file_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("decisions.csv");
+        assert_eq!(free_name(&path), "decisions (2).csv");
+        fs::write(dir.path().join("decisions (2).csv"), "kept").unwrap();
+        assert_eq!(free_name(&path), "decisions (3).csv");
+        // A locked "(3)" leads to "(4)", not "(3) (2)".
+        assert_eq!(free_name(&dir.path().join("decisions (3).csv")), "decisions (4).csv");
+        assert_eq!(free_name(&dir.path().join("notes (final).csv")), "notes (final) (2).csv");
     }
 }

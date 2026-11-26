@@ -10,7 +10,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::criteria::{self, ListKind};
 use crate::decisions::{self, Decision, ExclusionReason, Screening, Summary};
-use crate::export::{self, markdown, markdown::MarkdownExport};
+use crate::export::{self, Written, markdown, markdown::MarkdownExport};
 use crate::extraction::Extraction;
 use crate::highlights::{self, ExtractionTag, Highlight, HighlightCategory, HighlightEdit, NewHighlight};
 use crate::libraries::{self, LibraryError, LibrarySummary};
@@ -523,8 +523,17 @@ pub fn update_note_links(
     ref_links::update(conn, from, to)
 }
 
+/// How a CSV export ended, unless it was cancelled or failed.
+#[derive(serde::Serialize)]
+#[serde(tag = "status", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub enum CsvExport {
+    Saved { file_name: String },
+    /// Another app holds the file; `suggested_name` is free in the same folder.
+    InUse { file_name: String, suggested_name: String },
+}
+
 /// Asks where to save, then writes the CSV that `build` makes of the open library.
-/// Resolves to the file name, or `None` when the user cancels.
+/// `None` when the user cancels.
 fn save_csv(
     app_handle: &AppHandle,
     window: &WebviewWindow,
@@ -533,7 +542,7 @@ fn save_csv(
     session: u64,
     default_name: &str,
     build: fn(&Connection, CsvDelimiter) -> Result<String, LibraryError>,
-) -> Result<Option<String>, LibraryError> {
+) -> Result<Option<CsvExport>, LibraryError> {
     // No lock is held while the user chooses.
     let Some(path) = app_handle
         .dialog()
@@ -552,8 +561,20 @@ fn save_csv(
         let conn = libraries::library_for_reading(&current, session)?;
         build(conn, delimiter)?
     };
-    export::write_file(&path, &csv)?;
-    Ok(Some(path.file_name().unwrap_or_default().to_string_lossy().into_owned()))
+    let written = export::write_file(&path, &csv)?;
+    let file_name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    Ok(Some(match written {
+        Written::Saved => CsvExport::Saved { file_name },
+        Written::InUse => CsvExport::InUse { file_name, suggested_name: export::free_name(&path) },
+    }))
+}
+
+/// The name the save dialog starts with: the one given after "Save as…", else the
+/// usual one. A name only, never a folder.
+fn starting_name(suggested: Option<&str>, usual: &str) -> String {
+    suggested
+        .and_then(|name| std::path::Path::new(name).file_name())
+        .map_or_else(|| usual.to_string(), |name| name.to_string_lossy().into_owned())
 }
 
 /// "Decisions (CSV)" (FR-06.1). Also for a read-only library.
@@ -564,8 +585,10 @@ pub fn export_decisions(
     app: State<'_, AppDb>,
     current: State<'_, CurrentLibrary>,
     session: u64,
-) -> Result<Option<String>, LibraryError> {
-    save_csv(&app_handle, &window, &app, &current, session, "decisions.csv", export::decisions_csv)
+    suggested_name: Option<String>,
+) -> Result<Option<CsvExport>, LibraryError> {
+    let name = starting_name(suggested_name.as_deref(), "decisions.csv");
+    save_csv(&app_handle, &window, &app, &current, session, &name, export::decisions_csv)
 }
 
 /// "Extraction (CSV)" (FR-06.2). Also for a read-only library.
@@ -576,8 +599,10 @@ pub fn export_extraction(
     app: State<'_, AppDb>,
     current: State<'_, CurrentLibrary>,
     session: u64,
-) -> Result<Option<String>, LibraryError> {
-    save_csv(&app_handle, &window, &app, &current, session, "extraction.csv", export::extraction_csv)
+    suggested_name: Option<String>,
+) -> Result<Option<CsvExport>, LibraryError> {
+    let name = starting_name(suggested_name.as_deref(), "extraction.csv");
+    save_csv(&app_handle, &window, &app, &current, session, &name, export::extraction_csv)
 }
 
 /// "Highlights and notes (Markdown)" (FR-06.3): asks for a folder and writes one file
