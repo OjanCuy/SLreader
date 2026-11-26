@@ -158,6 +158,46 @@ describe("Libraries screen", () => {
     expect(mocked.createLibrary).toHaveBeenCalledWith("C:\\new", "Review");
   });
 
+  it("makes a new library from a backup, named like it, then opens it (FR-07.2)", async () => {
+    const backup = { path: "C:\\b\\aqua.json", libraryName: "Aquaculture", paperCount: 3 };
+    mocked.pickBackup.mockResolvedValue(backup);
+    mocked.pickFolder.mockResolvedValue("C:\\restored");
+    mocked.createLibraryFromBackup.mockResolvedValue(library());
+    const { onopen } = await show([]);
+
+    await fireEvent.click(button("Restore from backup"));
+    const name = (await screen.findByLabelText("Name")) as HTMLInputElement;
+    expect(name.value).toBe("Aquaculture");
+    await fireEvent.click(button("Choose folder"));
+    const submit = within(screen.getByRole("dialog")).getByRole("button", { name: "Create library" });
+    await vi.waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false));
+    await fireEvent.click(submit);
+
+    await vi.waitFor(() => expect(onopen).toHaveBeenCalledWith(library()));
+    expect(mocked.createLibraryFromBackup).toHaveBeenCalledWith("C:\\restored", "Aquaculture", backup.path);
+    expect(mocked.createLibrary).not.toHaveBeenCalled();
+    expect(toasts.map((t) => t.message)).toEqual(["Backup restored."]);
+  });
+
+  it("refuses a file that is not a backup", async () => {
+    mocked.pickBackup.mockRejectedValue({ code: "not_a_backup", detail: "x" });
+    await show([library()]);
+    await fireEvent.click(button("Restore from backup"));
+    await vi.waitFor(() =>
+      expect(toasts.map((t) => t.message)).toEqual(["This file isn't a SLReader backup."]),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("offers a backup on a damaged library's card", async () => {
+    mocked.pickBackup.mockResolvedValue(null);
+    await show([library({ name: null, paperCount: null, problem: "damaged" })]);
+    const card = screen.getByRole("listitem");
+    expect(within(card).getByText("This library's database is damaged.")).toBeTruthy();
+    await fireEvent.click(within(card).getByRole("button", { name: "Restore from backup" }));
+    await vi.waitFor(() => expect(mocked.pickBackup).toHaveBeenCalledOnce());
+  });
+
   it("keeps the create dialog open with a message when creating fails", async () => {
     mocked.pickFolder.mockResolvedValue("C:\\used");
     mocked.createLibrary.mockRejectedValue({ code: "already_exists", detail: "x" });

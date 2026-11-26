@@ -10,8 +10,10 @@
   import { createDecisionStore } from "../decision/decisionStore.svelte";
   import SummaryBar from "../decision/SummaryBar.svelte";
   import {
+    checkRestore,
     countNoteLinks,
     deletePaper,
+    exportBackup,
     exportDecisions,
     exportExtraction,
     exportMarkdown,
@@ -20,13 +22,27 @@
     listExtractionTags,
     listPapers,
     onPaperTextChanged,
+    openLibrary,
     paperForRefNo,
+    pickBackup,
     pickPdfs,
+    restoreBackup,
     updateNoteLinks,
+    type FileExport,
+    type LibraryError,
     type LibrarySummary,
     type PaperListItem,
+    type RestorePreview,
     type Summary,
   } from "../lib/api";
+  import {
+    BACKUP_ITEM,
+    backupErrorMessage,
+    overLimitMessage,
+    PAPER_LIMIT,
+    RESTORE_ITEM,
+    restoredMessage,
+  } from "../lib/backupTexts";
   import Button from "../lib/components/Button.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Icon from "../lib/components/Icon.svelte";
@@ -68,6 +84,7 @@
   import ImportReferencesDialog from "./ImportReferencesDialog.svelte";
   import LibrarySwitcher from "./LibrarySwitcher.svelte";
   import RenumberLinksDialog from "./RenumberLinksDialog.svelte";
+  import RestoreBackupDialog from "./RestoreBackupDialog.svelte";
 
   interface Props {
     library: LibrarySummary;
@@ -219,7 +236,12 @@
   /** The "is open in another app" toast on screen, if any. */
   let inUseToast: number | null = null;
 
-  function csvExport(write: typeof exportDecisions, suggestedName?: string): Export {
+  /** An export to one file, with "Save as…" when the file is open in another app. */
+  function fileExport(
+    write: (session: number, suggestedName?: string) => Promise<FileExport | null>,
+    withHighlights: boolean,
+    suggestedName?: string,
+  ): Export {
     return async () => {
       const done = await write(session, suggestedName);
       if (done?.status === "saved") showToast(exportedMessage(done.fileName), "success");
@@ -227,7 +249,7 @@
       const saveAs = {
         label: SAVE_AS,
         onselect: () =>
-          runExport(csvExport(write, done.suggestedName), write === exportExtraction),
+          runExport(fileExport(write, withHighlights, done.suggestedName), withHighlights),
       };
       inUseToast = showToast(fileInUseMessage(done.fileName), "error", [saveAs]);
       // Belongs to this library: dismissed with its other questions.
@@ -260,6 +282,74 @@
       showToast(SAVE_ERROR, "error");
     } finally {
       exporting = false;
+    }
+  }
+
+  /** A backup waiting for "Restore" in O-06 (FR-07.2). */
+  let restoring = $state.raw<{ path: string; preview: RestorePreview } | null>(null);
+  let restoreBusy = $state(false);
+
+  /** "Restore from backup…": choose a file, then ask if it replaces anything. */
+  async function startRestore() {
+    // Shares the flag with the exports, so the two never run at once.
+    if (exporting) return;
+    exporting = true;
+    try {
+      // What is typed is saved first, so that it cannot be saved over the backup later.
+      await Promise.all([decisions.settle(), highlights.settle(), settings.flush()]);
+      if (decisions.saveFailed || highlights.saveFailed || settings.failed) {
+        showToast(SAVE_ERROR, "error");
+        return;
+      }
+      const file = await pickBackup();
+      if (!file) return;
+      const preview = await checkRestore(session, file.path);
+      if (preview.papersAfter > PAPER_LIMIT) {
+        showToast(overLimitMessage(preview.papersAfter), "error");
+      } else if (preview.replacedPapers + preview.replacedHighlights > 0) {
+        restoring = { path: file.path, preview };
+      } else {
+        await finishRestore(file.path, preview);
+      }
+    } catch (failure) {
+      console.error("The backup could not be read", failure);
+      showToast(backupErrorMessage(failure, GENERIC_ERROR), "error");
+    } finally {
+      exporting = false;
+    }
+  }
+
+  async function finishRestore(path: string, preview: RestorePreview) {
+    let report;
+    try {
+      report = await restoreBackup(session, path);
+    } catch (failure) {
+      console.error("The backup could not be restored", failure);
+      const overLimit = (failure as Partial<LibraryError> | null)?.code === "over_limit";
+      showToast(
+        overLimit ? overLimitMessage(preview.papersAfter) : backupErrorMessage(failure, SAVE_ERROR),
+        "error",
+      );
+      return;
+    }
+    showToast(restoredMessage(report), "success");
+    try {
+      // Opening the library again mounts every screen afresh with what was restored.
+      onswitch(await openLibrary(library.id));
+    } catch (failure) {
+      showToast(libraryErrorMessage(failure, "load"), "error");
+    }
+  }
+
+  async function confirmRestore() {
+    const pending = restoring;
+    if (!pending || restoreBusy) return;
+    restoreBusy = true;
+    try {
+      await finishRestore(pending.path, pending.preview);
+    } finally {
+      restoreBusy = false;
+      restoring = null;
     }
   }
 
@@ -404,13 +494,13 @@
             label: DECISIONS_ITEM,
             disabled: noPapers !== undefined,
             hint: noPapers,
-            onselect: () => runExport(csvExport(exportDecisions), false),
+            onselect: () => runExport(fileExport(exportDecisions, false), false),
           },
           {
             label: EXTRACTION_ITEM,
             disabled: noExtraction !== undefined,
             hint: noExtraction,
-            onselect: () => runExport(csvExport(exportExtraction), true),
+            onselect: () => runExport(fileExport(exportExtraction, true), true),
           },
           {
             label: MARKDOWN_ITEM,
@@ -418,6 +508,10 @@
             hint: noPapers,
             onselect: () => runExport(markdownExport, true),
           },
+          { separator: true },
+          // Also without papers: the criteria and tags are worth keeping.
+          { label: BACKUP_ITEM, onselect: () => runExport(fileExport(exportBackup, true), true) },
+          { label: RESTORE_ITEM, disabled: problem?.readOnly, onselect: startRestore },
         ]}
       />
       <IconButton icon="settings" label="Settings" onclick={() => openSettings()} />
@@ -527,6 +621,15 @@
     busy={renumbering}
     onconfirm={confirmRenumber}
     onclose={() => (offers = offers.slice(1))}
+  />
+{/if}
+
+{#if restoring}
+  <RestoreBackupDialog
+    preview={restoring.preview}
+    busy={restoreBusy}
+    onconfirm={confirmRestore}
+    onclose={() => (restoring = null)}
   />
 {/if}
 

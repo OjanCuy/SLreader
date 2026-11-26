@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 
+use crate::backup::{self, Backup};
 use crate::db::library::{self, OpenedLibrary};
 use crate::db::{DbError, LibraryProblem};
 
@@ -66,6 +67,12 @@ pub enum ErrorCode {
     NotRegistered,
     /// The request was for a library that is no longer the open one.
     NotActive,
+    /// The chosen file is not an SLReader backup, or not a valid one (FR-07.2).
+    NotABackup,
+    /// The backup was made by a newer SLReader.
+    NewerBackup,
+    /// Restoring would put more than 250 papers in the library (FR-01.4).
+    OverLimit,
     /// Anything else: disk full, no permission, file locked, ...
     Other,
 }
@@ -159,6 +166,29 @@ pub fn create(
     folder: &str,
     name: &str,
 ) -> Result<LibrarySummary> {
+    create_with(app, active, folder, name, |_, _| Ok(()))
+}
+
+/// "Restore from backup" on the Libraries screen: a new library in `folder` holding
+/// the backup (FR-07.2). If restoring fails, the new library is removed again, so
+/// the folder is as it was and nothing is added to the list.
+pub fn create_from_backup(
+    app: &Connection,
+    active: &mut Option<ActiveLibrary>,
+    folder: &str,
+    name: &str,
+    backup: &Backup,
+) -> Result<LibrarySummary> {
+    create_with(app, active, folder, name, |conn, folder| backup::restore(conn, folder, backup, true).map(drop))
+}
+
+fn create_with(
+    app: &Connection,
+    active: &mut Option<ActiveLibrary>,
+    folder: &str,
+    name: &str,
+    fill: impl FnOnce(&Connection, &Path) -> Result<()>,
+) -> Result<LibrarySummary> {
     let folder = normalize(folder)?;
     if name.trim().is_empty() {
         return Err(DbError::InvalidName.into());
@@ -169,9 +199,21 @@ pub fn create(
     if folder.join(library::LIBRARY_DB_FILE).exists() {
         return Err(DbError::AlreadyExists(folder).into());
     }
+    let pdfs = folder.join(PDF_FOLDER);
+    let made_pdfs = !pdfs.exists();
     // Keeps whatever is already in an existing `pdfs` folder.
-    std::fs::create_dir_all(folder.join(PDF_FOLDER))?;
+    std::fs::create_dir_all(&pdfs)?;
     let conn = library::create_library(&folder, name)?;
+    if let Err(error) = fill(&conn, &folder) {
+        drop(conn);
+        // Only what was made here: the new database, and the `pdfs` folder if it was
+        // made here and is still empty (`remove_dir` refuses one that is not).
+        library::discard_new_library(&folder);
+        if made_pdfs {
+            let _ = std::fs::remove_dir(&pdfs);
+        }
+        return Err(error);
+    }
     let id = register(app, &folder)?;
     activate(app, active, id, OpenedLibrary { conn, read_only: None })
 }
@@ -464,6 +506,48 @@ mod tests {
     fn make_newer(folder: &str) {
         let conn = Connection::open(Path::new(folder).join(LIBRARY_DB_FILE)).unwrap();
         conn.pragma_update(None, "user_version", LIBRARY_SCHEMA.latest_version() + 1).unwrap();
+    }
+
+    /// A backup of a library with one paper titled "From backup".
+    fn a_backup(s: &Setup) -> Backup {
+        let source = library::create_library(Path::new(&s.folder("source")), "Source").unwrap();
+        source.execute("INSERT INTO paper (file_path, title) VALUES ('pdfs/a.pdf', 'From backup')", []).unwrap();
+        backup::parse(backup::export(&source).unwrap().as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn a_library_made_from_a_backup_is_listed_and_open() {
+        let mut s = setup();
+        let backup = a_backup(&s);
+        let folder = s.folder("restored");
+        let opened = create_from_backup(&s.app, &mut s.active, &folder, "Restored", &backup).unwrap();
+        assert_eq!((opened.name.as_deref(), opened.paper_count), (Some("Restored"), Some(1)));
+        assert_eq!(s.active_id(), Some(opened.id));
+        assert_eq!(s.list().len(), 1);
+        let conn = &s.active.as_ref().unwrap().library.conn;
+        let title: String = conn.query_row("SELECT title FROM paper", [], |r| r.get(0)).unwrap();
+        assert_eq!(title, "From backup");
+    }
+
+    #[test]
+    fn a_failed_restore_leaves_the_folder_as_it_was() {
+        let mut s = setup();
+        let mut backup = a_backup(&s);
+        // Two papers with one id cannot both be saved.
+        backup.papers.push(backup.papers[0].clone());
+        let folder = s.folder("restored");
+        assert!(create_from_backup(&s.app, &mut s.active, &folder, "Restored", &backup).is_err());
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 0);
+        assert!(s.list().is_empty());
+        assert_eq!(s.active_id(), None);
+
+        // A `pdfs` folder that was there before stays, with its files.
+        std::fs::create_dir(Path::new(&folder).join(PDF_FOLDER)).unwrap();
+        std::fs::write(Path::new(&folder).join("pdfs/a.pdf"), "x").unwrap();
+        assert!(create_from_backup(&s.app, &mut s.active, &folder, "Restored", &backup).is_err());
+        let left: Vec<_> = std::fs::read_dir(&folder).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, [PDF_FOLDER]);
+        assert!(Path::new(&folder).join("pdfs/a.pdf").exists());
     }
 
     #[test]

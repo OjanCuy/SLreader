@@ -252,7 +252,7 @@ describe("exporting the highlights and notes (FR-06.3)", () => {
 
 describe("a file open in another app (PRD Section 8)", () => {
   const MESSAGE = "decisions.csv is open in another app. Close it or save with a new name.";
-  const inUse: api.CsvExport = {
+  const inUse: api.FileExport = {
     status: "in_use",
     fileName: "decisions.csv",
     suggestedName: "decisions (2).csv",

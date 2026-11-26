@@ -47,6 +47,19 @@ pub fn create_library(folder: &Path, name: &str) -> Result<Connection, DbError> 
     created
 }
 
+/// Removes a library that `create_library` just made and that was never used, e.g.
+/// after restoring a backup into it failed. Only for that case: never call it for a
+/// library the user has worked in. Best effort.
+pub fn discard_new_library(folder: &Path) {
+    let path = folder.join(LIBRARY_DB_FILE);
+    let _ = std::fs::remove_file(&path);
+    for leftover in ["-journal", "-wal", "-shm"] {
+        let mut name = path.clone().into_os_string();
+        name.push(leftover);
+        let _ = std::fs::remove_file(name);
+    }
+}
+
 /// What the libraries list shows about a folder (FR-14.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibraryPeek {

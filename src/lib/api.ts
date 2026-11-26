@@ -42,6 +42,9 @@ export interface LibraryError {
     | "invalid_name"
     | "not_registered"
     | "not_active"
+    | "not_a_backup"
+    | "newer_backup"
+    | "over_limit"
     | "other";
   /** Technical detail. Do not show it to the user. */
   detail: string;
@@ -486,7 +489,7 @@ export function updateNoteLinks(session: number, from: number, to: number): Prom
 
 // ---- Exports (FR-06.1 to FR-06.3). ----
 
-export type CsvExport =
+export type FileExport =
   | { status: "saved"; fileName: string }
   /** Another app holds the file, which was not changed. */
   | { status: "in_use"; fileName: string; suggestedName: string };
@@ -495,12 +498,12 @@ export type CsvExport =
  * Asks where to save and writes the decisions as CSV. Null when the user cancels.
  * `suggestedName` replaces the usual file name in the dialog ("Save as…").
  */
-export function exportDecisions(session: number, suggestedName?: string): Promise<CsvExport | null> {
+export function exportDecisions(session: number, suggestedName?: string): Promise<FileExport | null> {
   return invoke("export_decisions", { session, suggestedName });
 }
 
 /** The same for the extraction: one column per tag, one row per paper. */
-export function exportExtraction(session: number, suggestedName?: string): Promise<CsvExport | null> {
+export function exportExtraction(session: number, suggestedName?: string): Promise<FileExport | null> {
   return invoke("export_extraction", { session, suggestedName });
 }
 
@@ -516,6 +519,62 @@ export interface MarkdownExport {
  */
 export function exportMarkdown(session: number): Promise<MarkdownExport | null> {
   return invoke("export_markdown", { session });
+}
+
+// ---- Backups (FR-07.1, FR-07.2). ----
+
+/** Asks where to save and writes a backup of the open library as JSON. */
+export function exportBackup(session: number, suggestedName?: string): Promise<FileExport | null> {
+  return invoke("export_backup", { session, suggestedName });
+}
+
+/** A backup file the user chose, already checked. */
+export interface BackupFile {
+  /** Given back to the restore commands, which read the file again. */
+  path: string;
+  libraryName: string;
+  paperCount: number;
+}
+
+/**
+ * Shows the system file picker for a backup. Null when the user cancels; rejects with
+ * `not_a_backup` or `newer_backup` for a file that cannot be restored.
+ */
+export function pickBackup(): Promise<BackupFile | null> {
+  return invoke("pick_backup");
+}
+
+export interface RestorePreview {
+  /** Papers and highlights of the library that the backup would replace. */
+  replacedPapers: number;
+  replacedHighlights: number;
+  /** More than 250 is refused. */
+  papersAfter: number;
+}
+
+/** What restoring would replace. Changes nothing. */
+export function checkRestore(session: number, path: string): Promise<RestorePreview> {
+  return invoke("check_restore", { session, path });
+}
+
+/** What a restore added to the library's lists. */
+export interface RestoreReport {
+  addedReasons: number;
+  addedTags: number;
+}
+
+/** Restores into the open library. Only after the user confirmed what checkRestore said. */
+export function restoreBackup(session: number, path: string): Promise<RestoreReport> {
+  return invoke("restore_backup", { session, path });
+}
+
+/** A new library made from a backup; it becomes the active one, like createLibrary. */
+export function createLibraryFromBackup(
+  folderPath: string,
+  name: string,
+  path: string,
+): Promise<LibrarySummary> {
+  return invoke("create_library_from_backup", { folderPath, name, path });
 }
 
 /** Shows the system file picker for one PDF. Null when the user cancels. */

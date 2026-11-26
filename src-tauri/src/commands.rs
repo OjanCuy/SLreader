@@ -8,6 +8,7 @@ use rusqlite::Connection;
 use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::backup::{self, RestorePreview, RestoreReport};
 use crate::criteria::{self, ListKind};
 use crate::decisions::{self, Decision, ExclusionReason, Screening, Summary};
 use crate::export::{self, Written, markdown, markdown::MarkdownExport};
@@ -18,7 +19,7 @@ use crate::metadata::{self, Metadata, PaperMetadata};
 use crate::papers::{self, ImportOutcome, ImportReport, PaperListItem};
 use crate::ref_links;
 use crate::references;
-use crate::settings::{self, CsvDelimiter, PageMode};
+use crate::settings::{self, PageMode};
 use crate::{AppDb, CurrentLibrary};
 
 /// A panic while holding a lock must not disable every later command.
@@ -523,49 +524,48 @@ pub fn update_note_links(
     ref_links::update(conn, from, to)
 }
 
-/// How a CSV export ended, unless it was cancelled or failed.
+/// How a file export ended, unless it was cancelled or failed.
 #[derive(serde::Serialize)]
 #[serde(tag = "status", rename_all = "snake_case", rename_all_fields = "camelCase")]
-pub enum CsvExport {
+pub enum FileExport {
     Saved { file_name: String },
     /// Another app holds the file; `suggested_name` is free in the same folder.
     InUse { file_name: String, suggested_name: String },
 }
 
-/// Asks where to save, then writes the CSV that `build` makes of the open library.
-/// `None` when the user cancels.
-fn save_csv(
+/// Asks where to save, then writes what `build` makes of the open library.
+/// `filter` is the file type the dialog offers. `None` when the user cancels.
+fn save_file(
     app_handle: &AppHandle,
     window: &WebviewWindow,
-    app: &AppDb,
     current: &CurrentLibrary,
     session: u64,
     default_name: &str,
-    build: fn(&Connection, CsvDelimiter) -> Result<String, LibraryError>,
-) -> Result<Option<CsvExport>, LibraryError> {
+    filter: (&str, &str),
+    build: impl FnOnce(&Connection) -> Result<String, LibraryError>,
+) -> Result<Option<FileExport>, LibraryError> {
     // No lock is held while the user chooses.
     let Some(path) = app_handle
         .dialog()
         .file()
         .set_parent(window)
         .set_file_name(default_name)
-        .add_filter("CSV", &["csv"])
+        .add_filter(filter.0, &[filter.1])
         .blocking_save_file()
         .and_then(|file| file.into_path().ok())
     else {
         return Ok(None);
     };
-    let delimiter = settings::csv_delimiter(&lock(&app.0))?;
-    let csv = {
+    let contents = {
         let current = lock(&current.0);
         let conn = libraries::library_for_reading(&current, session)?;
-        build(conn, delimiter)?
+        build(conn)?
     };
-    let written = export::write_file(&path, &csv)?;
+    let written = export::write_file(&path, &contents)?;
     let file_name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
     Ok(Some(match written {
-        Written::Saved => CsvExport::Saved { file_name },
-        Written::InUse => CsvExport::InUse { file_name, suggested_name: export::free_name(&path) },
+        Written::Saved => FileExport::Saved { file_name },
+        Written::InUse => FileExport::InUse { file_name, suggested_name: export::free_name(&path) },
     }))
 }
 
@@ -586,9 +586,12 @@ pub fn export_decisions(
     current: State<'_, CurrentLibrary>,
     session: u64,
     suggested_name: Option<String>,
-) -> Result<Option<CsvExport>, LibraryError> {
+) -> Result<Option<FileExport>, LibraryError> {
     let name = starting_name(suggested_name.as_deref(), "decisions.csv");
-    save_csv(&app_handle, &window, &app, &current, session, &name, export::decisions_csv)
+    let delimiter = settings::csv_delimiter(&lock(&app.0))?;
+    save_file(&app_handle, &window, &current, session, &name, ("CSV", "csv"), |conn| {
+        export::decisions_csv(conn, delimiter)
+    })
 }
 
 /// "Extraction (CSV)" (FR-06.2). Also for a read-only library.
@@ -600,9 +603,12 @@ pub fn export_extraction(
     current: State<'_, CurrentLibrary>,
     session: u64,
     suggested_name: Option<String>,
-) -> Result<Option<CsvExport>, LibraryError> {
+) -> Result<Option<FileExport>, LibraryError> {
     let name = starting_name(suggested_name.as_deref(), "extraction.csv");
-    save_csv(&app_handle, &window, &app, &current, session, &name, export::extraction_csv)
+    let delimiter = settings::csv_delimiter(&lock(&app.0))?;
+    save_file(&app_handle, &window, &current, session, &name, ("CSV", "csv"), |conn| {
+        export::extraction_csv(conn, delimiter)
+    })
 }
 
 /// "Highlights and notes (Markdown)" (FR-06.3): asks for a folder and writes one file
@@ -631,6 +637,102 @@ pub fn export_markdown(
         markdown::markdown_files(conn)?
     };
     markdown::write_folder(&parent, &files).map(Some)
+}
+
+/// "Backup (JSON)" (FR-07.1). Also for a read-only library.
+#[tauri::command(async)]
+pub fn export_backup(
+    app_handle: AppHandle,
+    window: WebviewWindow,
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    suggested_name: Option<String>,
+) -> Result<Option<FileExport>, LibraryError> {
+    let usual = {
+        let current = lock(&current.0);
+        backup::file_name(libraries::library_for_reading(&current, session)?)?
+    };
+    let name = starting_name(suggested_name.as_deref(), &usual);
+    save_file(&app_handle, &window, &current, session, &name, ("JSON", "json"), backup::export)
+}
+
+/// A backup file the user chose, checked and read (FR-07.2).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupFile {
+    /// Given back to `check_restore`, `restore_backup`, or `create_library_from_backup`,
+    /// which read the file again.
+    path: String,
+    library_name: String,
+    paper_count: usize,
+}
+
+/// Shows the system file picker for a backup and checks the chosen file. `None` when
+/// the user cancels; `NotABackup` or `NewerBackup` for a file that cannot be restored.
+#[tauri::command(async)]
+pub fn pick_backup(app: AppHandle, window: WebviewWindow) -> Result<Option<BackupFile>, LibraryError> {
+    let Some(path) = app
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .add_filter("JSON", &["json"])
+        .blocking_pick_file()
+        .and_then(|file| file.into_path().ok())
+    else {
+        return Ok(None);
+    };
+    let backup = backup::read_file(&path)?;
+    let path = path.to_str().ok_or_else(|| LibraryError::new(libraries::ErrorCode::Other, "path is not text"))?;
+    Ok(Some(BackupFile {
+        path: path.to_string(),
+        library_name: backup.library.name,
+        paper_count: backup.papers.len(),
+    }))
+}
+
+/// What restoring the backup into the open library would replace, for the question
+/// asked before it (FR-07.2). Changes nothing.
+#[tauri::command(async)]
+pub fn check_restore(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    path: String,
+) -> Result<RestorePreview, LibraryError> {
+    let backup = backup::read_file(std::path::Path::new(&path))?;
+    let current = lock(&current.0);
+    backup::preview(libraries::library_for_writing(&current, session)?, &backup)
+}
+
+/// Restores the backup into the open library. Only after the user has confirmed
+/// whatever `check_restore` reported.
+#[tauri::command(async)]
+pub fn restore_backup(
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+    path: String,
+) -> Result<RestoreReport, LibraryError> {
+    let backup = backup::read_file(std::path::Path::new(&path))?;
+    let current = lock(&current.0);
+    let (conn, folder) = libraries::library_and_folder_for_writing(&current, session)?;
+    backup::restore(conn, folder, &backup, false)
+}
+
+/// "Restore from backup" on the Libraries screen: a new library made from a backup,
+/// opened like a newly created one.
+#[tauri::command(async)]
+pub fn create_library_from_backup(
+    app: State<'_, AppDb>,
+    current: State<'_, CurrentLibrary>,
+    extraction: State<'_, Extraction>,
+    folder_path: String,
+    name: String,
+    path: String,
+) -> Result<LibrarySummary, LibraryError> {
+    let backup = backup::read_file(std::path::Path::new(&path))?;
+    let app = lock(&app.0);
+    let opened = libraries::create_from_backup(&app, &mut lock(&current.0), &folder_path, &name, &backup)?;
+    extract_in_background(&extraction, &opened);
+    Ok(opened)
 }
 
 /// A file chosen with "Choose CSV file".

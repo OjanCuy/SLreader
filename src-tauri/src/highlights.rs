@@ -134,7 +134,8 @@ fn invalid(detail: &str) -> LibraryError {
     LibraryError::new(ErrorCode::Other, format!("invalid highlight: {detail}"))
 }
 
-fn check(new: &NewHighlight) -> Result<(), LibraryError> {
+/// Also checks the highlights of a backup (`backup.rs`).
+pub(crate) fn check(new: &NewHighlight) -> Result<(), LibraryError> {
     if new.page < 1 {
         return Err(invalid("page must be 1 or more"));
     }

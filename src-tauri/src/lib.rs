@@ -1,3 +1,4 @@
+pub mod backup;
 mod commands;
 pub mod criteria;
 pub mod db;
@@ -112,6 +113,11 @@ pub fn run() {
             commands::export_decisions,
             commands::export_extraction,
             commands::export_markdown,
+            commands::export_backup,
+            commands::pick_backup,
+            commands::check_restore,
+            commands::restore_backup,
+            commands::create_library_from_backup,
             commands::list_criteria,
             commands::add_criterion,
             commands::update_criterion,

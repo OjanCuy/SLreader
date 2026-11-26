@@ -3,6 +3,7 @@
   import Button from "../lib/components/Button.svelte";
   import Icon from "../lib/components/Icon.svelte";
   import Menu, { type MenuItem } from "../lib/components/Menu.svelte";
+  import { RESTORE_BUTTON } from "../lib/backupTexts";
   import { LIBRARY_PROBLEMS } from "../lib/libraryProblems";
   import {
     CLOUD_WARNING,
@@ -17,9 +18,11 @@
     onlocate: () => void;
     onrename: () => void;
     onremove: () => void;
+    /** A damaged library: make a new one from a backup (PRD Section 8). */
+    onrestore: () => void;
   }
 
-  let { library, onopen, onlocate, onrename, onremove }: Props = $props();
+  let { library, onopen, onlocate, onrename, onremove, onrestore }: Props = $props();
 
   const title = $derived(libraryTitle(library));
   const problem = $derived(library.problem ? LIBRARY_PROBLEMS[library.problem] : null);
@@ -68,6 +71,8 @@
         <span>{problem.message}</span>
         {#if library.problem === "not_found"}
           <Button onclick={onlocate}>Locate folder</Button>
+        {:else if library.problem === "damaged"}
+          <Button onclick={onrestore}>{RESTORE_BUTTON}</Button>
         {/if}
       </div>
     {/if}

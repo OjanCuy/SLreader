@@ -6,18 +6,21 @@
     locateLibrary,
     openLibrary,
     openLibraryFolder,
+    pickBackup,
     pickFolder,
     removeLibrary,
+    type BackupFile,
     type LibraryError,
     type LibrarySummary,
   } from "../lib/api";
+  import { backupErrorMessage, restoredMessage, RESTORE_BUTTON } from "../lib/backupTexts";
   import Button from "../lib/components/Button.svelte";
   import Dialog from "../lib/components/Dialog.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import InlineBanner from "../lib/components/InlineBanner.svelte";
   import Skeleton from "../lib/components/Skeleton.svelte";
   import { showToast } from "../lib/components/toasts.svelte";
-  import { libraryErrorMessage, type LibraryAction } from "../lib/libraryTexts";
+  import { GENERIC_ERROR, libraryErrorMessage, type LibraryAction } from "../lib/libraryTexts";
   import CreateLibraryDialog from "./CreateLibraryDialog.svelte";
   import LibraryCard from "./LibraryCard.svelte";
   import RenameLibraryDialog from "./RenameLibraryDialog.svelte";
@@ -35,6 +38,8 @@
   let creating = $state(false);
   let renaming = $state<LibrarySummary>();
   let removing = $state<LibrarySummary>();
+  /** The backup a new library is being made from (FR-07.2). */
+  let restoring = $state<BackupFile>();
   // Ignores clicks while a folder dialog or an opening is still going on.
   let working = false;
 
@@ -80,6 +85,19 @@
       await locateLibrary(library.id, folder);
       await refresh();
     });
+
+  /** "Restore from backup": choose the file, then name and folder in O-01. */
+  async function chooseBackup() {
+    if (working) return;
+    working = true;
+    try {
+      restoring = (await pickBackup()) ?? undefined;
+    } catch (failure) {
+      showToast(backupErrorMessage(failure, GENERIC_ERROR), "error");
+    } finally {
+      working = false;
+    }
+  }
 
   function confirmRemove() {
     const library = removing;
@@ -131,17 +149,34 @@
           onlocate={() => locate(library)}
           onrename={() => (renaming = library)}
           onremove={() => (removing = library)}
+          onrestore={chooseBackup}
         />
       {/each}
     </ul>
   {/if}
 </main>
 
+<footer>
+  <Button variant="ghost" onclick={chooseBackup}>{RESTORE_BUTTON}</Button>
+</footer>
+
 {#if creating}
   <CreateLibraryDialog
     onclose={() => (creating = false)}
     oncreated={(library) => {
       creating = false;
+      onopen(library);
+    }}
+  />
+{/if}
+
+{#if restoring}
+  <CreateLibraryDialog
+    backup={restoring}
+    onclose={() => (restoring = undefined)}
+    oncreated={(library) => {
+      restoring = undefined;
+      showToast(restoredMessage({ addedReasons: 0, addedTags: 0 }), "success");
       onopen(library);
     }}
   />
@@ -168,7 +203,8 @@
 
 <style>
   header,
-  main {
+  main,
+  footer {
     max-width: 720px;
     margin: 0 auto;
     padding: var(--space-6) var(--panel-padding);
@@ -186,6 +222,10 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
+    padding-top: 0;
+  }
+
+  footer {
     padding-top: 0;
   }
 

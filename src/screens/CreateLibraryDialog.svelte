@@ -1,6 +1,19 @@
-<!-- O-01: name and folder for a new library (FR-14.1). Mounted only while open. -->
+<!--
+  O-01: name and folder for a new library (FR-14.1). Mounted only while open.
+  With `backup`, the new library is made from that backup ("Restore from backup",
+  FR-07.2) and the name starts as the backup's.
+-->
 <script lang="ts">
-  import { createLibrary, isCloudFolder, pickFolder, type LibrarySummary } from "../lib/api";
+  import { untrack } from "svelte";
+  import {
+    createLibrary,
+    createLibraryFromBackup,
+    isCloudFolder,
+    pickFolder,
+    type BackupFile,
+    type LibrarySummary,
+  } from "../lib/api";
+  import { backupErrorMessage } from "../lib/backupTexts";
   import Button from "../lib/components/Button.svelte";
   import Dialog from "../lib/components/Dialog.svelte";
   import InlineBanner from "../lib/components/InlineBanner.svelte";
@@ -8,13 +21,14 @@
   import { CLOUD_WARNING, libraryErrorMessage } from "../lib/libraryTexts";
 
   interface Props {
+    backup?: BackupFile;
     oncreated: (library: LibrarySummary) => void;
     onclose: () => void;
   }
 
-  let { oncreated, onclose }: Props = $props();
+  let { backup, oncreated, onclose }: Props = $props();
 
-  let name = $state("");
+  let name = $state(untrack(() => backup?.libraryName ?? ""));
   let folder = $state("");
   let busy = $state(false);
   let error = $state<string>();
@@ -41,10 +55,14 @@
     busy = true;
     error = undefined;
     try {
-      oncreated(await createLibrary(folder, name));
+      oncreated(
+        backup
+          ? await createLibraryFromBackup(folder, name, backup.path)
+          : await createLibrary(folder, name),
+      );
     } catch (failure) {
       // The dialog stays open with what was typed, so the user can try again.
-      error = libraryErrorMessage(failure, "create");
+      error = backupErrorMessage(failure, libraryErrorMessage(failure, "create"));
     } finally {
       busy = false;
     }

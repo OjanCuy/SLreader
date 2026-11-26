@@ -156,8 +156,8 @@ fn document(conn: &Connection, paper: &Paper) -> Result<String, LibraryError> {
     Ok(out)
 }
 
-/// A Windows file name without extension, made from a PDF's name.
-fn safe_stem(file_name: &str) -> String {
+/// A Windows file name without extension, made from a PDF's name (or any name).
+pub(crate) fn safe_stem(file_name: &str) -> String {
     let stem = match file_name.rsplit_once('.') {
         Some((stem, extension)) if extension.eq_ignore_ascii_case("pdf") => stem,
         _ => file_name,
