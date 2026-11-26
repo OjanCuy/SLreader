@@ -1,12 +1,15 @@
 //! Exports of the open library as CSV (FR-06.4): the decisions (FR-06.1) and the
-//! extraction, the tagged highlight texts of each paper (FR-06.2).
+//! extraction, the tagged highlight texts of each paper (FR-06.2). The Markdown files
+//! of the highlights and notes (FR-06.3) are in `export/markdown.rs`.
 //!
-//! Only reads the library. A file is written next to its target and then renamed over
+//! Only reads the library. A CSV file is written next to its target and then renamed over
 //! it, so a failed export (the file is open in Excel, the disk is full) leaves an
 //! existing file as it was.
 //!
 //! Every function that reads the library receives the connection of the open library
 //! from `libraries::library_for_reading` (FR-14.4).
+
+pub mod markdown;
 
 use std::collections::HashMap;
 use std::fs;

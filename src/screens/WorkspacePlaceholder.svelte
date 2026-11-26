@@ -14,6 +14,7 @@
     deletePaper,
     exportDecisions,
     exportExtraction,
+    exportMarkdown,
     getSummary,
     importPdfs,
     listExtractionTags,
@@ -47,8 +48,10 @@
   import { noPaperMessage, updatedMessage } from "../lib/refLinks";
   import {
     DECISIONS_ITEM,
+    exportedFilesMessage,
     exportedMessage,
     EXTRACTION_ITEM,
+    MARKDOWN_ITEM,
     NO_TAGS_TO_EXPORT,
     NOTHING_TO_EXPORT,
   } from "../lib/exportTexts";
@@ -208,20 +211,32 @@
   const noPapers = $derived(papers?.length ? undefined : NOTHING_TO_EXPORT);
   const noExtraction = $derived(noPapers ?? (hasTags === false ? NO_TAGS_TO_EXPORT : undefined));
 
-  async function exportCsv(write: (session: number) => Promise<string | null>) {
+  /** The success message of an export; null when the user cancelled it. */
+  type Export = () => Promise<string | null>;
+
+  const csvExport = (write: (session: number) => Promise<string | null>): Export => async () => {
+    const name = await write(session);
+    return name ? exportedMessage(name) : null;
+  };
+
+  const markdownExport: Export = async () => {
+    const done = await exportMarkdown(session);
+    return done ? exportedFilesMessage(done.fileCount, done.folderName) : null;
+  };
+
+  async function runExport(write: Export, withHighlights: boolean) {
     if (exporting) return;
     exporting = true;
     try {
       // The file holds what is on screen, so everything typed is saved first.
       await Promise.all([decisions.settle(), highlights.settle(), settings.flush()]);
-      // Highlights are only part of the extraction.
-      const unsavedHighlight = write === exportExtraction && highlights.saveFailed;
+      const unsavedHighlight = withHighlights && highlights.saveFailed;
       if (decisions.saveFailed || settings.failed || unsavedHighlight) {
         showToast(SAVE_ERROR, "error");
         return;
       }
-      const name = await write(session);
-      if (name) showToast(exportedMessage(name), "success");
+      const done = await write();
+      if (done) showToast(done, "success");
     } catch (failure) {
       console.error("The export failed", failure);
       showToast(SAVE_ERROR, "error");
@@ -371,13 +386,19 @@
             label: DECISIONS_ITEM,
             disabled: noPapers !== undefined,
             hint: noPapers,
-            onselect: () => exportCsv(exportDecisions),
+            onselect: () => runExport(csvExport(exportDecisions), false),
           },
           {
             label: EXTRACTION_ITEM,
             disabled: noExtraction !== undefined,
             hint: noExtraction,
-            onselect: () => exportCsv(exportExtraction),
+            onselect: () => runExport(csvExport(exportExtraction), true),
+          },
+          {
+            label: MARKDOWN_ITEM,
+            disabled: noPapers !== undefined,
+            hint: noPapers,
+            onselect: () => runExport(markdownExport, true),
           },
         ]}
       />

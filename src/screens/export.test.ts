@@ -32,6 +32,7 @@ beforeEach(() => {
   mocked.exportDecisions.mockResolvedValue("decisions.csv");
   mocked.exportExtraction.mockResolvedValue("extraction.csv");
   mocked.listExtractionTags.mockResolvedValue([{ id: "f", label: "FCR" }]);
+  mocked.exportMarkdown.mockResolvedValue({ folderName: "highlights", fileCount: 12 });
 });
 
 afterEach(() => {
@@ -183,5 +184,68 @@ describe("exporting the extraction (FR-06.2)", () => {
     await fireEvent.input(await screen.findByLabelText("Assessment notes"), { target: { value: "n" } });
     await fireEvent.click(await extractionItem());
     await vi.waitFor(() => expect(order).toEqual(["saved", "exported"]));
+  });
+});
+
+describe("exporting the highlights and notes (FR-06.3)", () => {
+  const markdownItem = (papers = true) => exportItem(papers, /Highlights and notes \(Markdown\)/);
+
+  it("exports and names the new folder", async () => {
+    show();
+    await fireEvent.click(await markdownItem());
+    await vi.waitFor(() => expect(messages()).toEqual(["Exported 12 files to highlights"]));
+    expect(mocked.exportMarkdown).toHaveBeenCalledExactlyOnceWith(7);
+  });
+
+  it("says file for a single one", async () => {
+    mocked.exportMarkdown.mockResolvedValue({ folderName: "highlights (2)", fileCount: 1 });
+    show();
+    await fireEvent.click(await markdownItem());
+    await vi.waitFor(() => expect(messages()).toEqual(["Exported 1 file to highlights (2)"]));
+  });
+
+  it("needs no tags and works for a read-only library", async () => {
+    mocked.listExtractionTags.mockResolvedValue([]);
+    show("newer_version");
+    expect((await markdownItem()).disabled).toBe(false);
+  });
+
+  it("is disabled with a reason while there are no papers", async () => {
+    mocked.listPapers.mockResolvedValue([]);
+    show();
+    const item = await markdownItem(false);
+    expect(item.disabled).toBe(true);
+    expect(item.textContent).toContain("No papers yet.");
+  });
+
+  it("says nothing when the user cancels", async () => {
+    mocked.exportMarkdown.mockResolvedValue(null);
+    show();
+    await fireEvent.click(await markdownItem());
+    await vi.waitFor(() => expect(mocked.exportMarkdown).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(messages()).toEqual([]);
+  });
+
+  it("says when the files cannot be written", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mocked.exportMarkdown.mockRejectedValue({ code: "other", detail: "access denied" });
+    show();
+    await fireEvent.click(await markdownItem());
+    await vi.waitFor(() =>
+      expect(messages()).toEqual(["Couldn't save: the disk is full or the folder is read-only."]),
+    );
+  });
+
+  it("does not export while a change could not be saved", async () => {
+    mocked.setAssessmentNote.mockRejectedValue(new Error("disk full"));
+    show();
+    await fireEvent.click(await screen.findByRole("button", { name: "a.pdf" }));
+    await fireEvent.input(await screen.findByLabelText("Assessment notes"), { target: { value: "n" } });
+    await fireEvent.click(await markdownItem());
+    await vi.waitFor(() =>
+      expect(messages()).toEqual(["Couldn't save: the disk is full or the folder is read-only."]),
+    );
+    expect(mocked.exportMarkdown).not.toHaveBeenCalled();
   });
 });

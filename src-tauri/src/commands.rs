@@ -10,7 +10,7 @@ use tauri_plugin_dialog::DialogExt;
 
 use crate::criteria::{self, ListKind};
 use crate::decisions::{self, Decision, ExclusionReason, Screening, Summary};
-use crate::export;
+use crate::export::{self, markdown, markdown::MarkdownExport};
 use crate::extraction::Extraction;
 use crate::highlights::{self, ExtractionTag, Highlight, HighlightCategory, HighlightEdit, NewHighlight};
 use crate::libraries::{self, LibraryError, LibrarySummary};
@@ -578,6 +578,34 @@ pub fn export_extraction(
     session: u64,
 ) -> Result<Option<String>, LibraryError> {
     save_csv(&app_handle, &window, &app, &current, session, "extraction.csv", export::extraction_csv)
+}
+
+/// "Highlights and notes (Markdown)" (FR-06.3): asks for a folder and writes one file
+/// per paper into a new folder inside it. `None` when the user cancels. Also for a
+/// read-only library.
+#[tauri::command(async)]
+pub fn export_markdown(
+    app_handle: AppHandle,
+    window: WebviewWindow,
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+) -> Result<Option<MarkdownExport>, LibraryError> {
+    // No lock is held while the user chooses.
+    let Some(parent) = app_handle
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .blocking_pick_folder()
+        .and_then(|folder| folder.into_path().ok())
+    else {
+        return Ok(None);
+    };
+    let files = {
+        let current = lock(&current.0);
+        let conn = libraries::library_for_reading(&current, session)?;
+        markdown::markdown_files(conn)?
+    };
+    markdown::write_folder(&parent, &files).map(Some)
 }
 
 /// A file chosen with "Choose CSV file".

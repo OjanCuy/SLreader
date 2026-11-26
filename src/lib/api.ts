@@ -484,7 +484,7 @@ export function updateNoteLinks(session: number, from: number, to: number): Prom
   return invoke("update_note_links", { session, from, to });
 }
 
-// ---- Exports (FR-06.1, FR-06.2). ----
+// ---- Exports (FR-06.1 to FR-06.3). ----
 
 /**
  * Asks where to save and writes the decisions as CSV. Resolves to the file name, or
@@ -497,6 +497,20 @@ export function exportDecisions(session: number): Promise<string | null> {
 /** The same for the extraction: one column per tag, one row per paper. */
 export function exportExtraction(session: number): Promise<string | null> {
   return invoke("export_extraction", { session });
+}
+
+export interface MarkdownExport {
+  /** The new folder inside the chosen one, e.g. "highlights". */
+  folderName: string;
+  fileCount: number;
+}
+
+/**
+ * Asks for a folder and writes one Markdown file per paper into a new folder inside
+ * it. Null when the user cancels.
+ */
+export function exportMarkdown(session: number): Promise<MarkdownExport | null> {
+  return invoke("export_markdown", { session });
 }
 
 /** Shows the system file picker for one PDF. Null when the user cancels. */

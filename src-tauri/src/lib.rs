@@ -111,6 +111,7 @@ pub fn run() {
             commands::update_note_links,
             commands::export_decisions,
             commands::export_extraction,
+            commands::export_markdown,
             commands::list_criteria,
             commands::add_criterion,
             commands::update_criterion,
