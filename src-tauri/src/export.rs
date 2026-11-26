@@ -1,4 +1,5 @@
-//! Exports of the open library: the CSV of the decisions (FR-06.1, FR-06.4).
+//! Exports of the open library as CSV (FR-06.4): the decisions (FR-06.1) and the
+//! extraction, the tagged highlight texts of each paper (FR-06.2).
 //!
 //! Only reads the library. A file is written next to its target and then renamed over
 //! it, so a failed export (the file is open in Excel, the disk is full) leaves an
@@ -7,6 +8,7 @@
 //! Every function that reads the library receives the connection of the open library
 //! from `libraries::library_for_reading` (FR-14.4).
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -19,6 +21,16 @@ use crate::settings::CsvDelimiter;
 /// The header of the decisions file, in this order and wording (FR-06.1).
 const DECISIONS_HEADER: [&str; 5] =
     ["Reference No", "Title", "Full-Text Decision", "Exclusion Reason", "Assessment Notes"];
+
+/// The columns of the extraction file before the one column per tag.
+const EXTRACTION_HEADER: [&str; 3] = ["Reference No", "Title", "Full-Text Decision"];
+
+/// Between the highlight texts in one cell, whatever the column separator (FR-06.2).
+const TEXT_SEPARATOR: &str = "; ";
+
+/// The order of the papers in both files: by reference number; papers without one come
+/// last, in the order they were added.
+const PAPER_ORDER: &str = "p.ref_no IS NULL, p.ref_no, p.created_at, p.rowid";
 
 /// Excel reads the file as UTF-8 only with this byte order mark.
 const BOM: &str = "\u{feff}";
@@ -52,47 +64,109 @@ fn push_row<S: AsRef<str>>(csv: &mut String, cells: &[S], separator: char) {
     csv.push_str("\r\n");
 }
 
-/// The decisions of every paper, by reference number; papers without one come last, in
-/// the order they were added.
+/// The word for a stored decision, as both files write it.
+fn decision_word(stored: &str) -> Result<&'static str, LibraryError> {
+    match stored {
+        "include" => Ok("Include"),
+        "exclude" => Ok("Exclude"),
+        "undecided" => Ok("Undecided"),
+        other => Err(LibraryError::new(ErrorCode::Other, format!("unknown decision {other}"))),
+    }
+}
+
+/// A paper without a title is known by its file name.
+fn shown_title(title: String, file_path: Option<String>) -> String {
+    match file_path {
+        Some(path) if title.trim().is_empty() => path.rsplit('/').next().unwrap_or(path.as_str()).to_string(),
+        _ => title,
+    }
+}
+
+/// The decisions of every paper, ordered by reference number.
 pub fn decisions_csv(conn: &Connection, delimiter: CsvDelimiter) -> Result<String, LibraryError> {
     let separator = delimiter.character();
     let mut csv = BOM.to_string();
     push_row(&mut csv, &DECISIONS_HEADER, separator);
     // The reason counts only while the paper is excluded (FR-04.3).
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT p.ref_no, p.title, p.file_path, p.decision, r.code, p.assessment_note
          FROM paper AS p
          LEFT JOIN exclusion_reason AS r ON r.id = p.exclusion_reason_id AND p.decision = 'exclude'
-         ORDER BY p.ref_no IS NULL, p.ref_no, p.created_at, p.rowid",
-    )?;
+         ORDER BY {PAPER_ORDER}",
+    ))?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let ref_no: Option<i64> = row.get(0)?;
-        let title: String = row.get(1)?;
-        let file_path: Option<String> = row.get(2)?;
+        let title = shown_title(row.get(1)?, row.get(2)?);
         let decision: String = row.get(3)?;
         let reason: Option<String> = row.get(4)?;
         let note: String = row.get(5)?;
-        let decision = match decision.as_str() {
-            "include" => "Include",
-            "exclude" => "Exclude",
-            "undecided" => "Undecided",
-            other => {
-                return Err(LibraryError::new(ErrorCode::Other, format!("unknown decision {other}")));
-            }
-        };
-        // A paper without a title is known by its file name.
-        let title = match file_path {
-            Some(path) if title.trim().is_empty() => path.rsplit('/').next().unwrap_or(path.as_str()).to_string(),
-            _ => title,
-        };
         let cells = [
             ref_no.map(|no| no.to_string()).unwrap_or_default(),
             text_cell(&title),
-            decision.to_string(),
+            decision_word(&decision)?.to_string(),
             text_cell(reason.as_deref().unwrap_or_default()),
             text_cell(&note),
         ];
+        push_row(&mut csv, &cells, separator);
+    }
+    Ok(csv)
+}
+
+/// A highlight's text without the line breaks it got from the PDF page.
+fn one_line(text: &str) -> String {
+    text.split(['\n', '\r', '\u{2028}', '\u{2029}'])
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// One row per paper and one column per extraction tag, in the order of the tags in
+/// Settings (FR-06.2). A cell holds the texts of the paper's highlights with that tag,
+/// by page, then oldest first. Highlights without a tag are not part of the file.
+pub fn extraction_csv(conn: &Connection, delimiter: CsvDelimiter) -> Result<String, LibraryError> {
+    let separator = delimiter.character();
+    let mut stmt = conn.prepare("SELECT id, label FROM extraction_tag ORDER BY sort_order, rowid")?;
+    let tags: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<_, _>>()?;
+
+    // The texts of each paper and tag.
+    let mut texts: HashMap<(String, String), Vec<String>> = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT paper_id, extraction_tag_id, text FROM highlight
+         WHERE extraction_tag_id IS NOT NULL ORDER BY page, created_at, rowid",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let text: String = row.get(2)?;
+        texts.entry((row.get(0)?, row.get(1)?)).or_default().push(one_line(&text));
+    }
+
+    let mut csv = BOM.to_string();
+    let mut header: Vec<String> = EXTRACTION_HEADER.map(String::from).to_vec();
+    header.extend(tags.iter().map(|(_, label)| text_cell(label)));
+    push_row(&mut csv, &header, separator);
+
+    let mut stmt = conn.prepare(&format!(
+        "SELECT p.id, p.ref_no, p.title, p.file_path, p.decision FROM paper AS p ORDER BY {PAPER_ORDER}",
+    ))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let paper: String = row.get(0)?;
+        let ref_no: Option<i64> = row.get(1)?;
+        let title = shown_title(row.get(2)?, row.get(3)?);
+        let decision: String = row.get(4)?;
+        let mut cells = vec![
+            ref_no.map(|no| no.to_string()).unwrap_or_default(),
+            text_cell(&title),
+            decision_word(&decision)?.to_string(),
+        ];
+        for (tag, _) in &tags {
+            let found = texts.remove(&(paper.clone(), tag.clone())).unwrap_or_default();
+            cells.push(text_cell(&found.join(TEXT_SEPARATOR)));
+        }
         push_row(&mut csv, &cells, separator);
     }
     Ok(csv)
@@ -216,7 +290,119 @@ mod tests {
         paper(&conn, Some(1), "A", None, "include", "n");
         let before = conn.total_changes();
         decisions_csv(&conn, CsvDelimiter::Semicolon).unwrap();
+        extraction_csv(&conn, CsvDelimiter::Semicolon).unwrap();
         assert_eq!(conn.total_changes(), before);
+    }
+
+    fn tag(conn: &Connection, id: &str, label: &str, order: i64) {
+        conn.execute(
+            "INSERT INTO extraction_tag (id, label, sort_order) VALUES (?1, ?2, ?3)",
+            params![id, label, order],
+        )
+        .unwrap();
+    }
+
+    /// A highlight on the paper with this reference number.
+    fn highlight(conn: &Connection, ref_no: i64, tag: Option<&str>, page: u32, text: &str) {
+        conn.execute(
+            "INSERT INTO highlight (paper_id, page, highlight_category_id, extraction_tag_id, text, rects)
+             VALUES ((SELECT id FROM paper WHERE ref_no = ?1), ?2,
+                     (SELECT id FROM highlight_category WHERE color = 'blue'), ?3, ?4, '[]')",
+            params![ref_no, page, tag, text],
+        )
+        .unwrap();
+    }
+
+    fn extraction_lines(conn: &Connection, delimiter: CsvDelimiter) -> Vec<String> {
+        let csv = extraction_csv(conn, delimiter).unwrap();
+        let body = csv.strip_prefix(BOM).expect("a byte order mark");
+        assert!(body.ends_with("\r\n"));
+        body.trim_end_matches("\r\n").split("\r\n").map(String::from).collect()
+    }
+
+    #[test]
+    fn the_tag_columns_follow_the_order_in_settings() {
+        // FR-06.2: "FCR, Species" puts FCR first, whichever was added first.
+        let (_dir, conn) = library();
+        tag(&conn, "s", "Species", 1);
+        tag(&conn, "f", "FCR", 0);
+        assert_eq!(
+            extraction_lines(&conn, CsvDelimiter::Semicolon),
+            ["Reference No;Title;Full-Text Decision;FCR;Species"]
+        );
+        conn.execute("UPDATE extraction_tag SET sort_order = 2 WHERE id = 'f'", []).unwrap();
+        assert_eq!(
+            extraction_lines(&conn, CsvDelimiter::Comma),
+            ["Reference No,Title,Full-Text Decision,Species,FCR"]
+        );
+    }
+
+    #[test]
+    fn one_row_per_paper_with_the_texts_of_each_tag_by_page() {
+        let (_dir, conn) = library();
+        tag(&conn, "f", "FCR", 0);
+        tag(&conn, "s", "Species", 1);
+        paper(&conn, Some(46), "B", None, "exclude", "");
+        paper(&conn, Some(5), "A", None, "include", "");
+        paper(&conn, None, "", Some("pdfs/kim-2021.pdf"), "undecided", "");
+        highlight(&conn, 5, Some("f"), 7, "later");
+        highlight(&conn, 5, Some("f"), 3, "first");
+        highlight(&conn, 5, Some("f"), 7, "latest");
+        highlight(&conn, 5, Some("s"), 1, "Tilapia");
+        highlight(&conn, 5, None, 1, "no tag");
+        highlight(&conn, 46, Some("s"), 2, "Catfish");
+        assert_eq!(
+            extraction_lines(&conn, CsvDelimiter::Comma)[1..],
+            [
+                "5,A,Include,first; later; latest,Tilapia",
+                "46,B,Exclude,,Catfish",
+                ",kim-2021.pdf,Undecided,,",
+            ]
+        );
+        // Between semicolons the joined texts need quotes (FR-06.4).
+        assert_eq!(
+            extraction_lines(&conn, CsvDelimiter::Semicolon)[1],
+            "5;A;Include;\"first; later; latest\";Tilapia"
+        );
+    }
+
+    #[test]
+    fn highlight_texts_lose_their_line_breaks_and_nothing_else() {
+        let (_dir, conn) = library();
+        tag(&conn, "f", "FCR", 0);
+        paper(&conn, Some(1), "A", None, "include", "");
+        highlight(&conn, 1, Some("f"), 1, "The \"FCR\" \r\nwas  1.4\n\nµg – é\u{2028}end");
+        assert_eq!(
+            extraction_lines(&conn, CsvDelimiter::Semicolon)[1],
+            "1;A;Include;\"The \"\"FCR\"\" was  1.4 µg – é end\""
+        );
+        // The stored text keeps them.
+        let stored: String = conn.query_row("SELECT text FROM highlight", [], |r| r.get(0)).unwrap();
+        assert!(stored.contains("\r\n"));
+    }
+
+    #[test]
+    fn no_extraction_cell_starts_like_a_formula() {
+        let (_dir, conn) = library();
+        tag(&conn, "f", "=Tag", 0);
+        paper(&conn, Some(1), "@Title", None, "include", "");
+        highlight(&conn, 1, Some("f"), 1, "-0.5 change");
+        highlight(&conn, 1, Some("f"), 2, "=2");
+        assert_eq!(
+            extraction_lines(&conn, CsvDelimiter::Comma),
+            ["Reference No,Title,Full-Text Decision,'=Tag", "1,'@Title,Include,'-0.5 change; =2"]
+        );
+    }
+
+    #[test]
+    fn without_tags_only_the_paper_columns_are_written() {
+        let (_dir, conn) = library();
+        paper(&conn, Some(1), "A", None, "include", "");
+        highlight(&conn, 1, None, 1, "no tag");
+        assert_eq!(
+            extraction_lines(&conn, CsvDelimiter::Semicolon),
+            ["Reference No;Title;Full-Text Decision", "1;A;Include"]
+        );
     }
 
     #[test]

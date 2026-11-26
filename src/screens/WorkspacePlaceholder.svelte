@@ -13,8 +13,10 @@
     countNoteLinks,
     deletePaper,
     exportDecisions,
+    exportExtraction,
     getSummary,
     importPdfs,
+    listExtractionTags,
     listPapers,
     onPaperTextChanged,
     paperForRefNo,
@@ -43,7 +45,13 @@
     SAVE_ERROR,
   } from "../lib/libraryTexts";
   import { noPaperMessage, updatedMessage } from "../lib/refLinks";
-  import { DECISIONS_ITEM, exportedMessage, NOTHING_TO_EXPORT } from "../lib/exportTexts";
+  import {
+    DECISIONS_ITEM,
+    exportedMessage,
+    EXTRACTION_ITEM,
+    NO_TAGS_TO_EXPORT,
+    NOTHING_TO_EXPORT,
+  } from "../lib/exportTexts";
   import { createHighlightStore } from "../reader/highlightStore.svelte";
   import HighlightsPanel from "../reader/HighlightsPanel.svelte";
   import Reader from "../reader/Reader.svelte";
@@ -112,6 +120,7 @@
 
   onMount(() => {
     refresh();
+    refreshHasTags();
     // The background extraction reports each finished paper (FR-01.6).
     const stop = onPaperTextChanged((changed) => {
       if (changed === session) refresh();
@@ -181,20 +190,40 @@
 
   let exporting = false;
 
-  async function exportCsv() {
+  /** Whether the library has extraction tags; null while unknown. */
+  let hasTags = $state<boolean | null>(null);
+
+  async function refreshHasTags() {
+    try {
+      const tags = await listExtractionTags(session);
+      hasTags = tags ? tags.length > 0 : null;
+    } catch (failure) {
+      // The export stays possible; it reads the tags itself.
+      hasTags = null;
+      console.error("The tags could not be read", failure);
+    }
+  }
+
+  /** Why an export item is disabled, if it is. */
+  const noPapers = $derived(papers?.length ? undefined : NOTHING_TO_EXPORT);
+  const noExtraction = $derived(noPapers ?? (hasTags === false ? NO_TAGS_TO_EXPORT : undefined));
+
+  async function exportCsv(write: (session: number) => Promise<string | null>) {
     if (exporting) return;
     exporting = true;
     try {
       // The file holds what is on screen, so everything typed is saved first.
-      await Promise.all([decisions.settle(), settings.flush()]);
-      if (decisions.saveFailed || settings.failed) {
+      await Promise.all([decisions.settle(), highlights.settle(), settings.flush()]);
+      // Highlights are only part of the extraction.
+      const unsavedHighlight = write === exportExtraction && highlights.saveFailed;
+      if (decisions.saveFailed || settings.failed || unsavedHighlight) {
         showToast(SAVE_ERROR, "error");
         return;
       }
-      const name = await exportDecisions(session);
+      const name = await write(session);
       if (name) showToast(exportedMessage(name), "success");
     } catch (failure) {
-      console.error("The decisions could not be exported", failure);
+      console.error("The export failed", failure);
       showToast(SAVE_ERROR, "error");
     } finally {
       exporting = false;
@@ -216,7 +245,12 @@
     settingsOpener?.focus();
     // The lists the workspace shows are read again once everything is saved.
     await settings.flush();
-    await Promise.all([decisions.refreshReasons(), highlights.refreshTags(), refreshSummary()]);
+    await Promise.all([
+      decisions.refreshReasons(),
+      highlights.refreshTags(),
+      refreshHasTags(),
+      refreshSummary(),
+    ]);
   }
 
   /** Only the answer to the latest request counts, so an older one cannot win. */
@@ -335,9 +369,15 @@
         items={[
           {
             label: DECISIONS_ITEM,
-            disabled: !papers?.length,
-            hint: papers?.length ? undefined : NOTHING_TO_EXPORT,
-            onselect: exportCsv,
+            disabled: noPapers !== undefined,
+            hint: noPapers,
+            onselect: () => exportCsv(exportDecisions),
+          },
+          {
+            label: EXTRACTION_ITEM,
+            disabled: noExtraction !== undefined,
+            hint: noExtraction,
+            onselect: () => exportCsv(exportExtraction),
           },
         ]}
       />

@@ -484,7 +484,7 @@ export function updateNoteLinks(session: number, from: number, to: number): Prom
   return invoke("update_note_links", { session, from, to });
 }
 
-// ---- Exports (FR-06.1). ----
+// ---- Exports (FR-06.1, FR-06.2). ----
 
 /**
  * Asks where to save and writes the decisions as CSV. Resolves to the file name, or
@@ -492,6 +492,11 @@ export function updateNoteLinks(session: number, from: number, to: number): Prom
  */
 export function exportDecisions(session: number): Promise<string | null> {
   return invoke("export_decisions", { session });
+}
+
+/** The same for the extraction: one column per tag, one row per paper. */
+export function exportExtraction(session: number): Promise<string | null> {
+  return invoke("export_extraction", { session });
 }
 
 /** Shows the system file picker for one PDF. Null when the user cancels. */

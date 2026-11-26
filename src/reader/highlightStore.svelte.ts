@@ -278,6 +278,10 @@ export function createHighlightStore() {
     get saved() {
       return saved;
     },
+    /** A change could not be saved and is waiting for "Try again". */
+    get saveFailed() {
+      return failures.size > 0;
+    },
     open,
     refreshTags,
     close: () => reset(null),

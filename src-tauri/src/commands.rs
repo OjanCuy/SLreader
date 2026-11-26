@@ -4,6 +4,7 @@
 
 use std::sync::{Mutex, MutexGuard};
 
+use rusqlite::Connection;
 use tauri::{AppHandle, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
@@ -17,7 +18,7 @@ use crate::metadata::{self, Metadata, PaperMetadata};
 use crate::papers::{self, ImportOutcome, ImportReport, PaperListItem};
 use crate::ref_links;
 use crate::references;
-use crate::settings::{self, PageMode};
+use crate::settings::{self, CsvDelimiter, PageMode};
 use crate::{AppDb, CurrentLibrary};
 
 /// A panic while holding a lock must not disable every later command.
@@ -522,22 +523,23 @@ pub fn update_note_links(
     ref_links::update(conn, from, to)
 }
 
-/// "Decisions (CSV)" (FR-06.1): asks where to save, then writes the file. Resolves to
-/// the file name, or `None` when the user cancels. Also for a read-only library.
-#[tauri::command(async)]
-pub fn export_decisions(
-    app_handle: AppHandle,
-    window: WebviewWindow,
-    app: State<'_, AppDb>,
-    current: State<'_, CurrentLibrary>,
+/// Asks where to save, then writes the CSV that `build` makes of the open library.
+/// Resolves to the file name, or `None` when the user cancels.
+fn save_csv(
+    app_handle: &AppHandle,
+    window: &WebviewWindow,
+    app: &AppDb,
+    current: &CurrentLibrary,
     session: u64,
+    default_name: &str,
+    build: fn(&Connection, CsvDelimiter) -> Result<String, LibraryError>,
 ) -> Result<Option<String>, LibraryError> {
     // No lock is held while the user chooses.
     let Some(path) = app_handle
         .dialog()
         .file()
-        .set_parent(&window)
-        .set_file_name("decisions.csv")
+        .set_parent(window)
+        .set_file_name(default_name)
         .add_filter("CSV", &["csv"])
         .blocking_save_file()
         .and_then(|file| file.into_path().ok())
@@ -548,10 +550,34 @@ pub fn export_decisions(
     let csv = {
         let current = lock(&current.0);
         let conn = libraries::library_for_reading(&current, session)?;
-        export::decisions_csv(conn, delimiter)?
+        build(conn, delimiter)?
     };
     export::write_file(&path, &csv)?;
     Ok(Some(path.file_name().unwrap_or_default().to_string_lossy().into_owned()))
+}
+
+/// "Decisions (CSV)" (FR-06.1). Also for a read-only library.
+#[tauri::command(async)]
+pub fn export_decisions(
+    app_handle: AppHandle,
+    window: WebviewWindow,
+    app: State<'_, AppDb>,
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+) -> Result<Option<String>, LibraryError> {
+    save_csv(&app_handle, &window, &app, &current, session, "decisions.csv", export::decisions_csv)
+}
+
+/// "Extraction (CSV)" (FR-06.2). Also for a read-only library.
+#[tauri::command(async)]
+pub fn export_extraction(
+    app_handle: AppHandle,
+    window: WebviewWindow,
+    app: State<'_, AppDb>,
+    current: State<'_, CurrentLibrary>,
+    session: u64,
+) -> Result<Option<String>, LibraryError> {
+    save_csv(&app_handle, &window, &app, &current, session, "extraction.csv", export::extraction_csv)
 }
 
 /// A file chosen with "Choose CSV file".
