@@ -1,29 +1,45 @@
 <!--
-  S-04 Settings, the "This library" group (FR-08.1, FR-08.2, FR-08.4). It covers the
-  workspace, which stays as it was behind it. The "App" group comes with T-37 and
-  T-41. Text approved in T-35.
+  S-04 Settings: the "This library" group (FR-08.1, FR-08.2, FR-08.4) and the "App"
+  group (FR-08.3, FR-08.5). It covers the workspace, which stays as it was behind it.
+  AI providers come with T-41, the search index with T-49. Text approved in T-35 and
+  T-37.
 -->
 <script lang="ts">
   import { onMount } from "svelte";
   import Button from "../lib/components/Button.svelte";
   import InlineBanner from "../lib/components/InlineBanner.svelte";
   import { SAVE_ERROR } from "../lib/libraryTexts";
+  import AppSettings from "./AppSettings.svelte";
+  import type { AppSettingsStore } from "./appSettingsStore.svelte";
   import CriteriaList from "./CriteriaList.svelte";
   import type { SettingsStore } from "./settingsStore.svelte";
-  import { SECTIONS, type SettingsSection } from "./settingsTexts";
+  import { APP_SECTIONS, SECTIONS, type SettingsPage } from "./settingsTexts";
 
   interface Props {
     store: SettingsStore;
-    section: SettingsSection;
+    app: AppSettingsStore;
+    section: SettingsPage;
     readOnly: boolean;
     /** The library's read-only message, if it has one. */
     notice?: string;
     onclose: () => void;
   }
 
-  let { store, section = $bindable(), readOnly, notice, onclose }: Props = $props();
+  let { store, app, section = $bindable(), readOnly, notice, onclose }: Props = $props();
 
-  const title = $derived(SECTIONS.find((each) => each.value === section)?.label);
+  const GROUPS: { title: string; sections: { value: SettingsPage; label: string }[] }[] = [
+    { title: "This library", sections: SECTIONS },
+    { title: "App", sections: APP_SECTIONS },
+  ];
+
+  const title = $derived(
+    GROUPS.flatMap((group) => group.sections).find((each) => each.value === section)?.label,
+  );
+
+  function retry() {
+    store.retry();
+    app.retry();
+  }
 
   let nav: HTMLElement;
   onMount(() => nav.querySelector<HTMLElement>('[aria-current="page"]')?.focus());
@@ -37,38 +53,45 @@
 
   <div class="body">
     <nav aria-label="Settings" bind:this={nav}>
-      <h2 class="group">This library</h2>
-      <ul>
-        {#each SECTIONS as each (each.value)}
-          <li>
-            <button
-              type="button"
-              aria-current={section === each.value ? "page" : undefined}
-              onclick={() => (section = each.value)}
-            >
-              {each.label}
-            </button>
-          </li>
-        {/each}
-      </ul>
+      {#each GROUPS as group (group.title)}
+        <h2 class="group">{group.title}</h2>
+        <ul>
+          {#each group.sections as each (each.value)}
+            <li>
+              <button
+                type="button"
+                aria-current={section === each.value ? "page" : undefined}
+                onclick={() => (section = each.value)}
+              >
+                {each.label}
+              </button>
+            </li>
+          {/each}
+        </ul>
+      {/each}
     </nav>
 
     <main>
       <div class="content">
         <h2>{title}</h2>
-        {#if readOnly && notice}
+        <!-- App settings can be changed in a read-only library too. -->
+        {#if readOnly && notice && section !== "export" && section !== "appearance"}
           <InlineBanner tone="warning" title={notice} />
         {/if}
-        {#if store.failed}
+        {#if store.failed || app.failed}
           <InlineBanner tone="error" title={SAVE_ERROR}>
             {#snippet actions()}
-              <Button onclick={() => store.retry()}>Try again</Button>
+              <Button onclick={retry}>Try again</Button>
             {/snippet}
           </InlineBanner>
         {/if}
 
         {#key section}
-          <CriteriaList {store} kind={section} {readOnly} />
+          {#if section === "export" || section === "appearance"}
+            <AppSettings store={app} {section} />
+          {:else}
+            <CriteriaList {store} kind={section} {readOnly} />
+          {/if}
         {/key}
       </div>
     </main>
@@ -119,6 +142,10 @@
     padding: 0 var(--space-2);
     color: var(--text-secondary);
     font: var(--type-caption);
+  }
+
+  nav ul + .group {
+    margin-top: var(--space-4);
   }
 
   ul {

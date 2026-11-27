@@ -1,5 +1,5 @@
 // Light / dark theme. "system" follows Windows; the others force a theme.
-// The choice is not saved yet: it will be stored by the app settings (T-37).
+// The choice is stored with the app settings (settings/appSettingsStore.svelte.ts).
 
 export type ThemeChoice = "system" | "light" | "dark";
 

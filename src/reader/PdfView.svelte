@@ -3,8 +3,9 @@
   Every page has a placeholder of its exact size, so the scrollbar is right from the
   start; only the pages near the view are drawn (FR-02.4).
   Search covers every page, also the ones not drawn (FR-02.1); Ctrl+F opens it.
-  Mounted once per opened PDF, so zoom and search start fresh for each paper; the
-  view starts at `startPage` and reports the pages read after that (FR-02.3).
+  Mounted once per opened PDF, so search starts fresh for each paper. The view starts
+  at `startPage` and `startZoom`, and reports the pages read (FR-02.3) and the zoom
+  chosen (FR-08.5) after that.
   Selecting text opens the highlight popover (O-03, FR-03.1) unless `onhighlight` is
   missing (read-only library).
 -->
@@ -47,6 +48,10 @@
     /** 1-based; a page past the end means the last one. */
     startPage?: number;
     onpagechange?: (page: number) => void;
+    /** The zoom to start with; null is "Fit width". */
+    startZoom?: number | null;
+    /** The user zoomed, or chose "Fit width" (null). */
+    onzoom?: (zoom: number | null) => void;
     mode?: PageMode;
     onmode?: (mode: PageMode) => void;
     /** The paper's highlights, drawn on their pages (FR-03.2). */
@@ -68,6 +73,8 @@
     pdf,
     startPage = 1,
     onpagechange,
+    startZoom = null,
+    onzoom,
     mode = "normal",
     onmode,
     highlights = [],
@@ -77,9 +84,9 @@
     jump = null,
   }: Props = $props();
 
-  let zoom = $state(1);
+  let zoom = $state(untrack(() => clampZoom(startZoom ?? 1)));
   /** "Fit width" stays on until the user zooms: it follows the window size (Brief Section 9). */
-  let fitWidth = $state(true);
+  let fitWidth = $state(untrack(() => startZoom === null));
 
   let scroller: HTMLDivElement;
   let viewWidth = $state(0);
@@ -91,9 +98,13 @@
   const page = $derived(currentPage(layout, scrollTop, viewHeight));
 
   $effect(() => {
-    if (fitWidth && viewWidth > 0) {
+    if (viewWidth <= 0) return;
+    if (fitWidth) {
       const fitted = fitWidthZoom(pdf.sizes, viewWidth);
       untrack(() => setZoom(fitted).then(showStartPage));
+    } else {
+      // A chosen zoom: the pages already have their size.
+      untrack(showStartPage);
     }
   });
 
@@ -137,8 +148,15 @@
   let zooming = $state(0);
 
   function zoomBy(change: (zoom: number) => number) {
+    const next = change(zoom);
     fitWidth = false;
-    setZoom(change(zoom));
+    setZoom(next);
+    onzoom?.(next);
+  }
+
+  function chooseFitWidth() {
+    fitWidth = true;
+    onzoom?.(null);
   }
 
   function goToPage(number: number) {
@@ -347,7 +365,7 @@
     total={pdf.sizes.length}
     onzoomout={() => zoomBy(zoomOut)}
     onzoomin={() => zoomBy(zoomIn)}
-    onfitwidth={() => (fitWidth = true)}
+    onfitwidth={chooseFitWidth}
     ongotopage={goToPage}
     {mode}
     {onmode}

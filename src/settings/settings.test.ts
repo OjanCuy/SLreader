@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/sve
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../lib/api";
 import { dismissToast, toasts } from "../lib/components/toasts.svelte";
+import { createAppSettingsStore } from "./appSettingsStore.svelte";
 import CriteriaList from "./CriteriaList.svelte";
 import SettingsScreen from "./SettingsScreen.svelte";
 import { createSettingsStore, SAVE_DELAY_MS } from "./settingsStore.svelte";
@@ -310,7 +311,8 @@ describe("the Settings screen", () => {
   it("starts on the research questions and switches sections", async () => {
     const store = createSettingsStore(() => 7);
     const onclose = vi.fn();
-    render(SettingsScreen, { store, section: "questions", readOnly: false, onclose });
+    const app = createAppSettingsStore();
+    render(SettingsScreen, { store, app, section: "questions", readOnly: false, onclose });
     expect(((await screen.findByRole("textbox", { name: "Question" })) as HTMLInputElement).value).toBe("RQ1?");
 
     await fireEvent.click(screen.getByRole("button", { name: "Extraction tags" }));

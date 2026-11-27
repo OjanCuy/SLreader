@@ -604,6 +604,62 @@ describe("page mode (FR-02.2)", () => {
   });
 });
 
+describe("zoom (FR-08.5)", () => {
+  // jsdom has no layout: give the view a size, so that "Fit width" has one to fit.
+  beforeEach(() => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(850);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
+    mocked.setZoom.mockResolvedValue();
+  });
+
+  afterEach(() => vi.restoreAllMocks());
+
+  const button = (name: string) => screen.getByRole("button", { name });
+
+  it("fits the width when nothing is stored, and saves nothing by itself", async () => {
+    mocked.getZoom.mockResolvedValue(null);
+    show();
+    // The room between the gaps is as wide as the page at 100%.
+    expect(await screen.findByText("100%")).toBeTruthy();
+    expect(mocked.setZoom).not.toHaveBeenCalled();
+  });
+
+  it("opens at the stored zoom", async () => {
+    mocked.getZoom.mockResolvedValue(1.5);
+    show();
+    expect(await screen.findByText("150%")).toBeTruthy();
+    expect(mocked.setZoom).not.toHaveBeenCalled();
+  });
+
+  it("saves the zoom and keeps it for the next paper", async () => {
+    mocked.getZoom.mockResolvedValue(1.5);
+    const { rerender } = show();
+    await screen.findByText("150%");
+    await fireEvent.click(button("Zoom in"));
+    expect(mocked.setZoom).toHaveBeenCalledExactlyOnceWith(1.75);
+    await rerender({ paperId: "p2" });
+    await vi.waitFor(() => expect(openPdf).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("175%")).toBeTruthy();
+    expect(mocked.getZoom).toHaveBeenCalledTimes(1);
+  });
+
+  it("saves Fit width as no zoom", async () => {
+    mocked.getZoom.mockResolvedValue(1.5);
+    show();
+    await screen.findByText("150%");
+    await fireEvent.click(button("Fit width"));
+    expect(mocked.setZoom).toHaveBeenCalledExactlyOnceWith(null);
+    expect(await screen.findByText("100%")).toBeTruthy();
+  });
+
+  it("opens the PDF when the zoom cannot be read", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mocked.getZoom.mockRejectedValue(new Error("broken"));
+    show();
+    expect(await screen.findByText("100%")).toBeTruthy();
+  });
+});
+
 describe("last page read (FR-02.3)", () => {
   // jsdom has no layout: give elements a size and a scroll position that can be set.
   const scrolled = new WeakMap<Element, number>();
@@ -683,6 +739,16 @@ describe("last page read (FR-02.3)", () => {
     const target = parseFloat(slot.style.top) + 0.5 * parseFloat(slot.style.height);
     expect(target).toBeGreaterThan(scroller.scrollTop);
     expect(target).toBeLessThan(scroller.scrollTop + 600);
+  });
+
+  it("goes to the stored page, and saves new ones, at a stored zoom too (FR-08.5)", async () => {
+    mocked.getZoom.mockResolvedValue(1.5);
+    await openAt(6);
+    expect(screen.getByText("150%")).toBeTruthy();
+    await vi.waitFor(() => expect(field().value).toBe("6"));
+    expect(mocked.saveLastPage).not.toHaveBeenCalled();
+    await goTo(4);
+    await vi.waitFor(() => expect(mocked.saveLastPage).toHaveBeenCalledExactlyOnceWith(7, "p1", 4));
   });
 
   it("saves the page the user moved to", async () => {

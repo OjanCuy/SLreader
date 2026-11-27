@@ -76,9 +76,10 @@
   import { createHighlightStore } from "../reader/highlightStore.svelte";
   import HighlightsPanel from "../reader/HighlightsPanel.svelte";
   import Reader from "../reader/Reader.svelte";
+  import { createAppSettingsStore } from "../settings/appSettingsStore.svelte";
   import SettingsScreen from "../settings/SettingsScreen.svelte";
   import { createSettingsStore } from "../settings/settingsStore.svelte";
-  import type { SettingsSection } from "../settings/settingsTexts";
+  import type { SettingsPage, SettingsSection } from "../settings/settingsTexts";
   import DeletePaperDialog from "./DeletePaperDialog.svelte";
   import DropZone from "./DropZone.svelte";
   import ImportReferencesDialog from "./ImportReferencesDialog.svelte";
@@ -114,8 +115,9 @@
   let offers = $state.raw<{ from: number; to: number; count: number }[]>([]);
   let renumbering = $state(false);
   const settings = createSettingsStore(() => session);
+  const appSettings = createAppSettingsStore();
   /** The Settings section on screen; null while the workspace is shown. */
-  let settingsSection = $state<SettingsSection | null>(null);
+  let settingsSection = $state<SettingsPage | null>(null);
   /** What had the focus when Settings opened. */
   let settingsOpener: HTMLElement | null = null;
   /** The counts in the top bar (FR-04.5). */
@@ -152,6 +154,7 @@
       highlights.flush();
       decisions.dispose();
       settings.dispose();
+      appSettings.dispose();
       questions.forEach(dismissToast);
       stop.then((unlisten) => unlisten()).catch(() => {});
     };
@@ -254,6 +257,15 @@
       inUseToast = showToast(fileInUseMessage(done.fileName), "error", [saveAs]);
       // Belongs to this library: dismissed with its other questions.
       questions.push(inUseToast);
+    };
+  }
+
+  /** A CSV file is only written with the separator that Settings shows. */
+  function csv(write: typeof exportDecisions): typeof exportDecisions {
+    return async (...args) => {
+      await appSettings.flush();
+      if (appSettings.delimiterFailed) throw new Error("The CSV separator was not saved");
+      return write(...args);
     };
   }
 
@@ -494,13 +506,13 @@
             label: DECISIONS_ITEM,
             disabled: noPapers !== undefined,
             hint: noPapers,
-            onselect: () => runExport(fileExport(exportDecisions, false), false),
+            onselect: () => runExport(fileExport(csv(exportDecisions), false), false),
           },
           {
             label: EXTRACTION_ITEM,
             disabled: noExtraction !== undefined,
             hint: noExtraction,
-            onselect: () => runExport(fileExport(exportExtraction, true), true),
+            onselect: () => runExport(fileExport(csv(exportExtraction), true), true),
           },
           {
             label: MARKDOWN_ITEM,
@@ -646,6 +658,7 @@
 {#if settingsSection !== null}
   <SettingsScreen
     store={settings}
+    app={appSettings}
     bind:section={settingsSection}
     readOnly={problem?.readOnly ?? false}
     notice={problem?.message}

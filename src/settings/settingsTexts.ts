@@ -11,6 +11,25 @@ export const SECTIONS: { value: SettingsSection; label: string }[] = [
   { value: "tag", label: "Extraction tags" },
 ];
 
+/** The "App" group: settings shared by all libraries (FR-08.5). */
+export type AppSection = "export" | "appearance";
+
+/** Any section of the Settings screen. */
+export type SettingsPage = SettingsSection | AppSection;
+
+export const APP_SECTIONS: { value: AppSection; label: string }[] = [
+  { value: "export", label: "Export" },
+  { value: "appearance", label: "Appearance" },
+];
+
+export const DELIMITER_LABEL = "CSV separator";
+export const DELIMITER_OPTIONS = [
+  { value: ";", label: "Semicolon" },
+  { value: ",", label: "Comma" },
+] as const;
+
+export const THEME_LABEL = "Theme";
+
 export const SAVED = "Saved";
 export const REQUIRED = "This field is required.";
 

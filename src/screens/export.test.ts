@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "../lib/api";
 import { dismissToast, toasts } from "../lib/components/toasts.svelte";
@@ -247,6 +247,31 @@ describe("exporting the highlights and notes (FR-06.3)", () => {
       expect(messages()).toEqual(["Couldn't save: the disk is full or the folder is read-only."]),
     );
     expect(mocked.exportMarkdown).not.toHaveBeenCalled();
+  });
+});
+
+describe("the CSV separator (FR-08.3)", () => {
+  it("writes no CSV file while the chosen separator is not saved", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mocked.getCsvDelimiter.mockResolvedValue(";");
+    mocked.getTheme.mockResolvedValue("system");
+    mocked.setCsvDelimiter.mockRejectedValue(new Error("disk full"));
+    show();
+    await screen.findByRole("button", { name: "a.pdf" });
+    await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    // The section in Settings, not the Export menu of the workspace behind it.
+    const sections = within(screen.getByRole("navigation", { name: "Settings" }));
+    await fireEvent.click(sections.getByRole("button", { name: "Export" }));
+    await fireEvent.click(await screen.findByRole("radio", { name: "Comma" }));
+    await screen.findByRole("button", { name: "Try again" });
+    await fireEvent.click(screen.getByRole("button", { name: "Back to reader" }));
+    [...toasts].forEach((toast) => dismissToast(toast.id));
+
+    await fireEvent.click(await extractionItem());
+    await vi.waitFor(() =>
+      expect(messages()).toEqual(["Couldn't save: the disk is full or the folder is read-only."]),
+    );
+    expect(mocked.exportExtraction).not.toHaveBeenCalled();
   });
 });
 

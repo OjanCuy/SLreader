@@ -59,6 +59,10 @@ pub fn run() {
             // %APPDATA%\io.github.ojancuy.slreader on Windows.
             let data_dir = app.path().app_data_dir()?;
             let conn = db::app::open_app_db(&data_dir)?;
+            // The stored theme, as early as possible (FR-08.5).
+            if let Some(window) = app.get_webview_window("main") {
+                commands::show_theme(&window, settings::theme(&conn).unwrap_or_default());
+            }
             app.manage(AppDb(Mutex::new(conn)));
             app.manage(CurrentLibrary::default());
 
@@ -133,6 +137,12 @@ pub fn run() {
             commands::save_last_page,
             commands::get_page_mode,
             commands::set_page_mode,
+            commands::get_theme,
+            commands::set_theme,
+            commands::get_csv_delimiter,
+            commands::set_csv_delimiter,
+            commands::get_zoom,
+            commands::set_zoom,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

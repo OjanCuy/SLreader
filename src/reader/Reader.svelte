@@ -1,6 +1,6 @@
 <!--
   S-02 Reader (FR-02.1): opens the selected paper's PDF at the page it was last read
-  at (FR-02.3), and keeps the page mode (FR-02.2).
+  at (FR-02.3), and keeps the page mode (FR-02.2) and the zoom (FR-08.5).
   States from Brief Section 7: "Select a paper from the list.", "Loading PDF…",
   "PDF file is missing." + "Attach PDF", "This PDF can't be opened.".
   A password-protected PDF asks for its password when opened (PRD Section 8, T-19):
@@ -14,10 +14,12 @@
     extractLockedPaperText,
     getLastPage,
     getPageMode,
+    getZoom,
     pickPdf,
     readPaperPdf,
     saveLastPage,
     setPageMode,
+    setZoom,
     type LibraryError,
     type PageMode,
   } from "../lib/api";
@@ -60,7 +62,13 @@
     | { kind: "missing" }
     | { kind: "broken" }
     | { kind: "locked" }
-    | { kind: "ready"; pdf: OpenedPdf; startPage: number; saver: PageSaver };
+    | {
+        kind: "ready";
+        pdf: OpenedPdf;
+        startPage: number;
+        startZoom: number | null;
+        saver: PageSaver;
+      };
 
   let view = $state<View>({ kind: "empty" });
   /** Bumped to open the same paper again, e.g. after "Attach PDF" or a password. */
@@ -94,6 +102,22 @@
     modeChosen = true;
     mode = next;
     setPageMode(next)?.catch((failure) => console.error("The page mode was not saved", failure));
+  }
+
+  /** The zoom the next PDF opens with, shared by all papers; null is "Fit width". */
+  let zoom: number | null = null;
+  const zoomRead = (async () => {
+    try {
+      zoom = (await getZoom()) ?? null;
+    } catch (failure) {
+      console.error("The zoom could not be read", failure);
+    }
+  })();
+
+  /** Only possible with a PDF on screen, so after the stored zoom was read. */
+  function chooseZoom(next: number | null) {
+    zoom = next;
+    setZoom(next)?.catch((failure) => console.error("The zoom was not saved", failure));
   }
 
   /** The first page is a fine place to start when the stored one cannot be read. */
@@ -140,11 +164,12 @@
           readPaperPdf(session, id),
           lastPage(id),
           highlightsRead,
+          zoomRead,
         ]);
         if (stopped) return;
         opened = await openPdf(bytes, tried);
         if (stopped) return opened.close();
-        view = { kind: "ready", pdf: opened, startPage, saver };
+        view = { kind: "ready", pdf: opened, startPage, startZoom: zoom, saver };
         askingPassword = false;
         wrongPassword = false;
         if (tried !== undefined && writable) {
@@ -213,6 +238,8 @@
         pdf={view.pdf}
         startPage={view.startPage}
         onpagechange={view.saver.change}
+        startZoom={view.startZoom}
+        onzoom={chooseZoom}
         {mode}
         onmode={chooseMode}
         highlights={store.highlights}

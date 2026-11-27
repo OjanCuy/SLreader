@@ -1,12 +1,23 @@
 <script lang="ts">
-  import type { LibrarySummary } from "./lib/api";
+  import { onMount } from "svelte";
+  import { getTheme, type LibrarySummary } from "./lib/api";
   import Button from "./lib/components/Button.svelte";
   import ToastRegion from "./lib/components/ToastRegion.svelte";
+  import { applyTheme } from "./lib/theme";
   import LibrariesScreen from "./screens/LibrariesScreen.svelte";
   import WorkspacePlaceholder from "./screens/WorkspacePlaceholder.svelte";
 
   /** The open library; the Libraries screen is shown while there is none. */
   let current = $state<LibrarySummary>();
+
+  // The theme chosen in Settings (FR-08.5). Until it is read, Windows decides.
+  onMount(async () => {
+    try {
+      applyTheme((await getTheme()) ?? "system");
+    } catch (failure) {
+      console.error("The theme could not be read", failure);
+    }
+  });
 
   // Component gallery (T-05), development only: import.meta.env.DEV is false in releases.
   const gallery = import.meta.env.DEV ? () => import("./gallery/Gallery.svelte") : null;

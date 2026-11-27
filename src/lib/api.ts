@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { LibraryProblem } from "./libraryProblems";
+import type { ThemeChoice } from "./theme";
 
 export interface AppInfo {
   name: string;
@@ -180,6 +181,36 @@ export function getPageMode(): Promise<PageMode> {
 
 export function setPageMode(mode: PageMode): Promise<void> {
   return invoke("set_page_mode", { mode });
+}
+
+/** The app's colors (FR-08.5). One setting for the whole app. */
+export function getTheme(): Promise<ThemeChoice> {
+  return invoke("get_theme");
+}
+
+/** Colors the window's title bar for the theme, and remembers the theme. */
+export function setTheme(theme: ThemeChoice): Promise<void> {
+  return invoke("set_theme", { theme });
+}
+
+/** The column separator of CSV exports (FR-08.3). One setting for the whole app. */
+export type CsvDelimiter = ";" | ",";
+
+export function getCsvDelimiter(): Promise<CsvDelimiter> {
+  return invoke("get_csv_delimiter");
+}
+
+export function setCsvDelimiter(delimiter: CsvDelimiter): Promise<void> {
+  return invoke("set_csv_delimiter", { delimiter });
+}
+
+/** The reader's zoom (1 is 100%), or null for "Fit width" (FR-08.5). */
+export function getZoom(): Promise<number | null> {
+  return invoke("get_zoom");
+}
+
+export function setZoom(zoom: number | null): Promise<void> {
+  return invoke("set_zoom", { zoom });
 }
 
 /**

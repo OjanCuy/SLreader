@@ -19,7 +19,7 @@ use crate::metadata::{self, Metadata, PaperMetadata};
 use crate::papers::{self, ImportOutcome, ImportReport, PaperListItem};
 use crate::ref_links;
 use crate::references;
-use crate::settings::{self, PageMode};
+use crate::settings::{self, CsvDelimiter, PageMode, Theme};
 use crate::{AppDb, CurrentLibrary};
 
 /// A panic while holding a lock must not disable every later command.
@@ -886,6 +886,59 @@ pub fn get_page_mode(app: State<'_, AppDb>) -> Result<PageMode, LibraryError> {
 #[tauri::command(async)]
 pub fn set_page_mode(app: State<'_, AppDb>, mode: PageMode) -> Result<(), LibraryError> {
     Ok(settings::set_page_mode(&lock(&app.0), mode)?)
+}
+
+/// The theme, an app setting (FR-08.5).
+#[tauri::command(async)]
+pub fn get_theme(app: State<'_, AppDb>) -> Result<Theme, LibraryError> {
+    Ok(settings::theme(&lock(&app.0))?)
+}
+
+/// Colors the title bar for the theme, then remembers it: the window changes also
+/// when the choice cannot be saved, like the page inside it.
+#[tauri::command(async)]
+pub fn set_theme(
+    window: WebviewWindow,
+    app: State<'_, AppDb>,
+    theme: Theme,
+) -> Result<(), LibraryError> {
+    show_theme(&window, theme);
+    Ok(settings::set_theme(&lock(&app.0), theme)?)
+}
+
+/// Gives the window (its title bar and web view) the theme; `System` follows Windows.
+/// A window that cannot be changed keeps its colors, which harms nothing.
+pub fn show_theme(window: &WebviewWindow, theme: Theme) {
+    let _ = window.set_theme(match theme {
+        Theme::System => None,
+        Theme::Light => Some(tauri::Theme::Light),
+        Theme::Dark => Some(tauri::Theme::Dark),
+    });
+}
+
+/// The column separator of CSV exports (FR-08.3).
+#[tauri::command(async)]
+pub fn get_csv_delimiter(app: State<'_, AppDb>) -> Result<CsvDelimiter, LibraryError> {
+    Ok(settings::csv_delimiter(&lock(&app.0))?)
+}
+
+#[tauri::command(async)]
+pub fn set_csv_delimiter(
+    app: State<'_, AppDb>,
+    delimiter: CsvDelimiter,
+) -> Result<(), LibraryError> {
+    Ok(settings::set_csv_delimiter(&lock(&app.0), delimiter)?)
+}
+
+/// The reader's zoom; none means "Fit width" (FR-08.5).
+#[tauri::command(async)]
+pub fn get_zoom(app: State<'_, AppDb>) -> Result<Option<f64>, LibraryError> {
+    Ok(settings::zoom(&lock(&app.0))?)
+}
+
+#[tauri::command(async)]
+pub fn set_zoom(app: State<'_, AppDb>, zoom: Option<f64>) -> Result<(), LibraryError> {
+    Ok(settings::set_zoom(&lock(&app.0), zoom)?)
 }
 
 #[tauri::command(async)]
